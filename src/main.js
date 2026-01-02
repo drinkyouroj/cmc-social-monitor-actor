@@ -313,6 +313,15 @@ Actor.main(async () => {
     } catch (e) {
       const statusCode = e?.statusCode;
       const type = e?.type;
+      if (statusCode === 402 || type === 'not-enough-usage-to-run-paid-actor') {
+        throw new Error(
+          [
+            `Not enough Apify usage to run paid Store Actor: "${actorId}".`,
+            'This means the Actor you configured is paid and your current account/org does not have enough remaining platform usage to start it.',
+            'Fix: switch to a free Actor (or your own), upgrade billing, or use the built-in CoinMarketCap.com source: platformRuns[].actorId = "cmc/headlines-news".',
+          ].join(' ')
+        );
+      }
       if (statusCode === 404 || type === 'record-not-found') {
         throw new Error(
           [
