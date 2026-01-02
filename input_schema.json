@@ -47,7 +47,8 @@
         "caseInsensitive": {
           "title": "Case insensitive",
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "If true, matching ignores letter case (e.g. dgram matches DGRAM)."
         },
         "useWordBoundaries": {
           "title": "Use word boundaries",
@@ -67,12 +68,19 @@
       "type": "object",
       "editor": "json",
       "properties": {
-        "enabled": { "title": "Enabled", "type": "boolean", "default": true },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean",
+          "default": true,
+          "description": "If true, avoid emitting the same item multiple times across runs."
+        },
         "maxSeenIdsPerPlatform": {
           "title": "Max seen IDs per platform",
           "type": "integer",
           "default": 5000,
           "minimum": 100
+          ,
+          "description": "Upper bound for stored IDs per platform in state (higher = less repeat alerts, more storage)."
         }
       },
       "default": { "enabled": true, "maxSeenIdsPerPlatform": 5000 }
@@ -100,7 +108,8 @@
           "title": "Max items per dataset",
           "type": "integer",
           "default": 1000,
-          "minimum": 1
+          "minimum": 1,
+          "description": "Safety limit when reading items from each platform dataset."
         }
       },
       "default": { "maxItemsPerDataset": 1000 }
