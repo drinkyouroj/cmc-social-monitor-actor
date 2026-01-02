@@ -35,6 +35,7 @@
       "title": "Matching rules",
       "type": "object",
       "editor": "json",
+      "description": "Rules for deciding whether a dataset item contains a monitored symbol/term.",
       "properties": {
         "symbols": {
           "title": "Symbols / terms",
@@ -67,6 +68,7 @@
       "title": "Dedupe",
       "type": "object",
       "editor": "json",
+      "description": "Options to reduce duplicate alerts across runs.",
       "properties": {
         "enabled": {
           "title": "Enabled",
@@ -89,6 +91,7 @@
       "title": "Notifications",
       "type": "object",
       "editor": "json",
+      "description": "Where to send notifications for matches (optional).",
       "properties": {
         "webhookUrl": {
           "title": "Webhook URL",
@@ -103,6 +106,7 @@
       "title": "Debug",
       "type": "object",
       "editor": "json",
+      "description": "Debug and safety limits.",
       "properties": {
         "maxItemsPerDataset": {
           "title": "Max items per dataset",
