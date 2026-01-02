@@ -29,10 +29,10 @@ This Actor is designed as an **orchestrator**:
   "platformRuns": [
     {
       "name": "x",
-      "actorId": "<APIFY_STORE_ACTOR_ID>",
+      "actorId": "mikolabs/tweets-scraper",
       "input": {
-        "searchTerms": ["DGRAM"],
-        "maxTweets": 200
+        "twitterHandles": ["CoinMarketCap"],
+        "maxItems": 200
       }
     }
   ],
