@@ -29,8 +29,9 @@ This Actor is designed as an **orchestrator**:
   "platformRuns": [
     {
       "name": "coinmarketcap",
-      "actorId": "cmc/headlines-news",
+      "actorId": "cmc/currency-news",
       "input": {
+        "currencySlugOrUrl": "https://coinmarketcap.com/currencies/datagram-network/",
         "maxItems": 200
       }
     }
@@ -48,7 +49,9 @@ This Actor is designed as an **orchestrator**:
 ### Important notes
 
 - **`platformRuns` cannot be empty** if you want results. This Actor only filters items produced by the scraper Actors you configure in `platformRuns`.
-- **CoinMarketCap.com source (no external scraper needed)**: use `platformRuns[].actorId = "cmc/headlines-news"` to fetch CoinMarketCap Headlines (News) directly and filter by your `symbols`.
+- **CoinMarketCap.com sources (no external scraper needed)**:
+  - `cmc/headlines-news`: CoinMarketCap Headlines (general news feed)
+  - `cmc/currency-news`: CoinMarketCap *token page* news for a specific currency page (provide `input.currencySlugOrUrl` or `input.coinId`)
 - **Pick a valid `actorId`** from the Apify Store. Open the Actor page and copy it from the URL, e.g. `username/actor-name` (also accepted: `username~actor-name`).
 - **Configure monitored symbols** via **top-level `symbols`** (recommended). For backwards compatibility, you can also use `match.symbols`.
 

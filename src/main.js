@@ -136,6 +136,88 @@ async function fetchCmcHeadlinesNews({ maxItems } = {}) {
   });
 }
 
+function normalizeCmcCurrencySlug(slugOrUrl) {
+  const raw = String(slugOrUrl || '').trim();
+  if (!raw) return null;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    try {
+      const u = new URL(raw);
+      const m = u.pathname.match(/\/currencies\/([^/]+)\/?/);
+      return m?.[1] || null;
+    } catch {
+      return null;
+    }
+  }
+  return raw.replace(/^\/+|\/+$/g, '');
+}
+
+async function resolveCmcCoinId({ coinId, currencySlugOrUrl } = {}) {
+  const direct = Number(coinId);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+
+  const slug = normalizeCmcCurrencySlug(currencySlugOrUrl);
+  if (!slug) return null;
+
+  const url = `https://coinmarketcap.com/currencies/${slug}/`;
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'Mozilla/5.0 (compatible; CMC-Social-Monitor/0.1; +https://apify.com)',
+      accept: 'text/html,application/xhtml+xml',
+    },
+  });
+  if (!res.ok) throw new Error(`CoinMarketCap currency page fetch failed: ${res.status} ${res.statusText}`);
+  const html = await res.text();
+
+  const nextData = extractNextDataJson(html);
+  const id = nextData?.props?.pageProps?.detailRes?.detail?.id;
+  const num = Number(id);
+  return Number.isFinite(num) && num > 0 ? num : null;
+}
+
+async function fetchCmcCurrencyNews({ coinId, currencySlugOrUrl, maxItems, language } = {}) {
+  const resolvedId = await resolveCmcCoinId({ coinId, currencySlugOrUrl });
+  if (!resolvedId) throw new Error('CoinMarketCap: could not resolve coinId from currencySlugOrUrl.');
+
+  const size = Number.isFinite(maxItems) ? Math.max(1, Math.min(200, maxItems)) : 50;
+  const lang = String(language || 'en').trim() || 'en';
+  const url = `https://api.coinmarketcap.com/content/v3/news?coins=${encodeURIComponent(String(resolvedId))}&language=${encodeURIComponent(lang)}&size=${encodeURIComponent(String(size))}`;
+
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'Mozilla/5.0 (compatible; CMC-Social-Monitor/0.1; +https://apify.com)',
+      accept: 'application/json,text/plain,*/*',
+    },
+  });
+  if (!res.ok) throw new Error(`CoinMarketCap news API fetch failed: ${res.status} ${res.statusText}`);
+  const body = await res.json();
+  const items = Array.isArray(body?.data) ? body.data : [];
+
+  return items.map((entry) => {
+    const meta = entry?.meta || {};
+    const title = meta.title || entry?.slug || '';
+    const description = meta.subtitle || '';
+    const permalink = meta.sourceUrl || null;
+    const assets = Array.isArray(entry?.assets)
+      ? entry.assets
+          .map((a) => a?.name)
+          .filter((s) => typeof s === 'string' && s.trim())
+          .map((s) => s.trim())
+      : [];
+
+    return {
+      id: meta.id || entry?.slug || permalink || null,
+      url: permalink,
+      title,
+      description,
+      assets,
+      releasedAt: meta.releasedAt || null,
+      sourceName: meta.sourceName || null,
+      text: [title, description, assets.length ? `Assets: ${assets.join(', ')}` : ''].filter(Boolean).join('\n').trim(),
+      raw: entry,
+    };
+  });
+}
+
 async function maybeNotify(webhookUrl, payload) {
   if (!webhookUrl) return;
 
@@ -293,6 +375,81 @@ Actor.main(async () => {
             runId: null,
             datasetId: null,
             url: 'https://coinmarketcap.com/headlines/news/',
+          },
+          raw: item,
+        };
+
+        await Actor.pushData(out);
+        totalEmitted += 1;
+
+        rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+
+        try {
+          await maybeNotify(String(notify.webhookUrl || '').trim(), out);
+        } catch (e) {
+          log.exception(e, 'Notification failed');
+        }
+      }
+
+      log.info('Platform run complete', { platform, checked: totalChecked, emitted: totalEmitted });
+      continue;
+    }
+
+    if (actorId === 'cmc/currency-news') {
+      log.info('Fetching CoinMarketCap Currency News', { platform, actorId });
+
+      const items = await fetchCmcCurrencyNews({
+        coinId: actorInput?.coinId,
+        currencySlugOrUrl: actorInput?.currencySlugOrUrl,
+        maxItems: actorInput?.maxItems,
+        language: actorInput?.language,
+      });
+
+      let totalChecked = 0;
+      let totalEmitted = 0;
+
+      for (const item of items) {
+        totalChecked += 1;
+        if (totalChecked > maxItemsPerDataset) break;
+
+        const stableId = pickStableId(item) || String(item?.id || `cmc-news:${totalChecked}`);
+        if (dedupeEnabled && alreadySeen({ state, platform, id: stableId })) continue;
+
+        const texts = extractTextCandidates(item);
+        const joined = texts.join('\n').trim();
+        if (!joined) {
+          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+          continue;
+        }
+
+        if (!symbolsRegex.test(joined)) {
+          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+          continue;
+        }
+
+        const { isMatch, matchedSymbols } = matchTextAgainstSymbols({
+          text: joined,
+          symbols,
+          caseInsensitive,
+          useWordBoundaries,
+        });
+
+        if (!isMatch) {
+          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+          continue;
+        }
+
+        const out = {
+          platform,
+          stableId,
+          matchedAt: new Date().toISOString(),
+          matchedSymbols,
+          text: joined,
+          source: {
+            actorId,
+            runId: null,
+            datasetId: null,
+            url: item?.url || null,
           },
           raw: item,
         };
