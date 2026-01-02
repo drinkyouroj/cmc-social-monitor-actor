@@ -1,0 +1,14 @@
+{
+  "actorSpecification": 1,
+  "name": "cmc-social-monitor",
+  "title": "CMC Social Monitor",
+  "description": "Orchestrates platform scrapers and flags posts/comments containing ® and/or configured keywords.",
+  "version": "0.1",
+  "meta": {
+    "template": "custom"
+  },
+  "input": "./input_schema.json",
+  "dockerfile": "./Dockerfile"
+}
+
+

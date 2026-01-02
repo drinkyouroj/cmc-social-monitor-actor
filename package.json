@@ -1,0 +1,16 @@
+{
+  "name": "cmc-social-monitor-actor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Apify Actor orchestrator to monitor social posts + comments and flag registered-symbol/keyword matches.",
+  "type": "commonjs",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "dependencies": {
+    "apify": "^3.2.0"
+  }
+}
+
+

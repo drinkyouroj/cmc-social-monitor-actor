@@ -1,0 +1,66 @@
+# CMC Social Monitor (Apify Actor)
+
+Monitors social media posts + comments and flags anything containing one or more configured **symbols/terms** (e.g. token symbols like `DGRAM`).
+
+This Actor is designed as an **orchestrator**:
+- It can call one or more existing Apify Store Actors (e.g., X/Twitter, YouTube, Reddit scrapers).
+- It pulls their output datasets, normalizes text, filters matches, dedupes, and stores results in **its own dataset**.
+
+> Note: scraping and automation may be restricted by platform terms. Prefer official APIs when available, or ensure you have the rights/permission to monitor the content.
+
+## How it works (high level)
+
+1. For each `platformRuns[]` entry in input:
+   - call the referenced Actor with its `input`
+   - read items from its default dataset
+2. Extract text fields (post text, comment text, etc.)
+3. Filter items that match:
+   - symbols/terms (case-insensitive by default)
+4. Dedupe using an Apify KV-store state record
+5. Push matches to this Actor’s dataset (optionally notify via webhook)
+
+## Input example
+
+```json
+{
+  "platformRuns": [
+    {
+      "name": "x",
+      "actorId": "apify/twitter-scraper",
+      "input": {
+        "searchTerms": ["DGRAM"],
+        "maxTweets": 200
+      }
+    }
+  ],
+  "match": {
+    "symbols": ["DGRAM"],
+    "caseInsensitive": true
+  },
+  "dedupe": {
+    "enabled": true,
+    "maxSeenIdsPerPlatform": 5000
+  },
+  "notify": {
+    "webhookUrl": ""
+  }
+}
+```
+
+## Local development
+
+This repo is intended to run on Apify, but you can run it locally if you have Node.js 18+.
+
+```bash
+npm install
+npm run start
+```
+
+Environment variables:
+- `APIFY_TOKEN` (required if you call other Actors via the API)
+
+## Deploy to Apify
+
+You can create and deploy Actors using Apify templates and the Apify CLI (see Apify templates page: `https://apify.com/templates`).
+
+

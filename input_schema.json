@@ -1,0 +1,97 @@
+{
+  "title": "CMC Social Monitor input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "platformRuns": {
+      "title": "Platform runs",
+      "type": "array",
+      "description": "List of platform scraper Actors to run (Apify Store or your own). Their output datasets will be filtered.",
+      "items": {
+        "type": "object",
+        "required": ["name", "actorId", "input"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Short platform label (e.g. x, youtube, reddit)."
+          },
+          "actorId": {
+            "type": "string",
+            "description": "Actor ID in Apify, e.g. apify/twitter-scraper."
+          },
+          "input": {
+            "type": "object",
+            "description": "Input for the referenced Actor."
+          }
+        }
+      },
+      "default": []
+    },
+    "match": {
+      "title": "Matching rules",
+      "type": "object",
+      "properties": {
+        "symbols": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["DGRAM"],
+          "description": "Symbols/terms to monitor for (e.g. token symbols like DGRAM). Exact matching depends on caseInsensitive + useWordBoundaries."
+        },
+        "caseInsensitive": {
+          "type": "boolean",
+          "default": true
+        },
+        "useWordBoundaries": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, symbols are matched as whole words (\\bDGRAM\\b). Useful to reduce false positives."
+        }
+      },
+      "default": {
+        "symbols": ["DGRAM"],
+        "caseInsensitive": true,
+        "useWordBoundaries": false
+      }
+    },
+    "dedupe": {
+      "title": "Dedupe",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "maxSeenIdsPerPlatform": {
+          "type": "integer",
+          "default": 5000,
+          "minimum": 100
+        }
+      },
+      "default": { "enabled": true, "maxSeenIdsPerPlatform": 5000 }
+    },
+    "notify": {
+      "title": "Notifications",
+      "type": "object",
+      "properties": {
+        "webhookUrl": {
+          "type": "string",
+          "default": "",
+          "description": "If set, POST a JSON payload for each emitted match."
+        }
+      },
+      "default": { "webhookUrl": "" }
+    },
+    "debug": {
+      "title": "Debug",
+      "type": "object",
+      "properties": {
+        "maxItemsPerDataset": {
+          "type": "integer",
+          "default": 1000,
+          "minimum": 1
+        }
+      },
+      "default": { "maxItemsPerDataset": 1000 }
+    }
+  },
+  "required": ["platformRuns", "match"]
+}
+
+
