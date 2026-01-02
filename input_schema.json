@@ -27,7 +27,8 @@
       "title": "Platform runs",
       "type": "array",
       "editor": "json",
-      "description": "List of platform scraper Actors to run (Apify Store or your own). Their output datasets will be filtered.",
+      "description": "List of platform scraper Actors to run (Apify Store or your own). Their output datasets will be filtered. Must contain at least 1 entry to get any results.",
+      "minItems": 1,
       "items": {
         "type": "object",
         "required": ["name", "actorId", "input"],

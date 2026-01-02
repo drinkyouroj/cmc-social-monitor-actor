@@ -159,7 +159,13 @@ Actor.main(async () => {
   const maxItemsPerDataset = Number.isFinite(debug.maxItemsPerDataset) ? debug.maxItemsPerDataset : 1000;
 
   if (!symbolsRegex) {
-    throw new Error('Invalid configuration: provide match.symbols (e.g. ["DGRAM"]).');
+    throw new Error('Invalid configuration: provide symbols (e.g. ["DGRAM"]).');
+  }
+
+  if (platformRuns.length === 0) {
+    throw new Error(
+      'Invalid configuration: provide platformRuns with at least one scraper Actor (e.g. [{"name":"x","actorId":"apify/twitter-scraper","input":{"searchTerms":["DGRAM"],"maxTweets":200}}]).'
+    );
   }
 
   const state = await loadState();
