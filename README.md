@@ -29,7 +29,7 @@ This Actor is designed as an **orchestrator**:
   "platformRuns": [
     {
       "name": "x",
-      "actorId": "apify/twitter-scraper",
+      "actorId": "<APIFY_STORE_ACTOR_ID>",
       "input": {
         "searchTerms": ["DGRAM"],
         "maxTweets": 200
@@ -49,6 +49,7 @@ This Actor is designed as an **orchestrator**:
 ### Important notes
 
 - **`platformRuns` cannot be empty** if you want results. This Actor only filters items produced by the scraper Actors you configure in `platformRuns`.
+- **Pick a valid `actorId`** from the Apify Store. Open the Actor page and copy it from the URL, e.g. `username/actor-name` (also accepted: `username~actor-name`).
 - **Configure monitored symbols** via **top-level `symbols`** (recommended). For backwards compatibility, you can also use `match.symbols`.
 
 ## Local development

@@ -190,7 +190,31 @@ Actor.main(async () => {
     }
 
     log.info('Running scraper Actor', { platform, actorId });
-    const run = await client.actor(actorId).call(actorInput);
+    let run;
+    try {
+      run = await client.actor(actorId).call(actorInput);
+    } catch (e) {
+      const statusCode = e?.statusCode;
+      const type = e?.type;
+      if (statusCode === 404 || type === 'record-not-found') {
+        throw new Error(
+          [
+            `Scraper Actor not found: "${actorId}".`,
+            'Open the Actor in the Apify Store and copy the ID from the URL (format: username/actor-name).',
+            'Then paste it into platformRuns[].actorId.',
+          ].join(' ')
+        );
+      }
+      if (statusCode === 401 || statusCode === 403) {
+        throw new Error(
+          [
+            `Not authorized to run scraper Actor: "${actorId}".`,
+            'Ensure your run has a valid APIFY_TOKEN (and access to that Actor if it is private/paid).',
+          ].join(' ')
+        );
+      }
+      throw e;
+    }
     const datasetId = run?.defaultDatasetId;
 
     if (!datasetId) {
