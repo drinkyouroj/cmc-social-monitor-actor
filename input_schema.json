@@ -3,6 +3,26 @@
   "type": "object",
   "schemaVersion": 1,
   "properties": {
+    "symbols": {
+      "title": "Symbols / terms",
+      "type": "array",
+      "editor": "json",
+      "items": { "type": "string" },
+      "default": ["DGRAM"],
+      "description": "Symbols/terms to monitor for (e.g. token symbols like DGRAM)."
+    },
+    "caseInsensitive": {
+      "title": "Case insensitive",
+      "type": "boolean",
+      "default": true,
+      "description": "If true, matching ignores letter case (e.g. dgram matches DGRAM)."
+    },
+    "useWordBoundaries": {
+      "title": "Use word boundaries",
+      "type": "boolean",
+      "default": false,
+      "description": "If true, symbols are matched as whole words (\\bDGRAM\\b). Useful to reduce false positives."
+    },
     "platformRuns": {
       "title": "Platform runs",
       "type": "array",
@@ -119,7 +139,7 @@
       "default": { "maxItemsPerDataset": 1000 }
     }
   },
-  "required": ["platformRuns", "match"]
+  "required": ["platformRuns"]
 }
 
 

@@ -139,14 +139,17 @@ Actor.main(async () => {
   const notify = input.notify || {};
   const debug = input.debug || {};
 
-  const symbols = normalizeSymbols(match.symbols);
-  const caseInsensitive = match.caseInsensitive !== false;
-  const useWordBoundaries = match.useWordBoundaries === true;
+  // Backwards-compatible input:
+  // - preferred: top-level symbols/caseInsensitive/useWordBoundaries
+  // - legacy/advanced: match.{symbols,caseInsensitive,useWordBoundaries}
+  const symbols = normalizeSymbols(match.symbols ?? input.symbols);
+  const caseInsensitive = (match.caseInsensitive ?? input.caseInsensitive) !== false;
+  const useWordBoundaries = (match.useWordBoundaries ?? input.useWordBoundaries) === true;
 
   const symbolsRegex = buildSymbolsRegex({
     symbols,
-    caseInsensitive: match.caseInsensitive !== false,
-    useWordBoundaries: match.useWordBoundaries === true,
+    caseInsensitive,
+    useWordBoundaries,
   });
 
   const dedupeEnabled = dedupe.enabled !== false;

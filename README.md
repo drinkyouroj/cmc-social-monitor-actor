@@ -23,6 +23,9 @@ This Actor is designed as an **orchestrator**:
 
 ```json
 {
+  "symbols": ["DGRAM"],
+  "caseInsensitive": true,
+  "useWordBoundaries": false,
   "platformRuns": [
     {
       "name": "x",
@@ -33,10 +36,6 @@ This Actor is designed as an **orchestrator**:
       }
     }
   ],
-  "match": {
-    "symbols": ["DGRAM"],
-    "caseInsensitive": true
-  },
   "dedupe": {
     "enabled": true,
     "maxSeenIdsPerPlatform": 5000
@@ -46,6 +45,11 @@ This Actor is designed as an **orchestrator**:
   }
 }
 ```
+
+### Important notes
+
+- **`platformRuns` cannot be empty** if you want results. This Actor only filters items produced by the scraper Actors you configure in `platformRuns`.
+- **Configure monitored symbols** via **top-level `symbols`** (recommended). For backwards compatibility, you can also use `match.symbols`.
 
 ## Local development
 
