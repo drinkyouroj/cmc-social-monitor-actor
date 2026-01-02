@@ -84,6 +84,51 @@ function matchTextAgainstSymbols({ text, symbols, caseInsensitive, useWordBounda
   return { isMatch: matchedSymbols.length > 0, matchedSymbols };
 }
 
+function extractNextDataJson(html) {
+  const m = String(html || '').match(/<script id="__NEXT_DATA__" type="application\/json"[^>]*>([\s\S]*?)<\/script>/);
+  if (!m) return null;
+  try {
+    return JSON.parse(m[1]);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCmcHeadlinesNews({ maxItems } = {}) {
+  const url = 'https://coinmarketcap.com/headlines/news/';
+  const res = await fetch(url, {
+    headers: {
+      // Basic UA helps avoid occasional bot-block behavior for simple HTML fetches.
+      'user-agent': 'Mozilla/5.0 (compatible; CMC-Social-Monitor/0.1; +https://apify.com)',
+      accept: 'text/html,application/xhtml+xml',
+    },
+  });
+  if (!res.ok) throw new Error(`CoinMarketCap fetch failed: ${res.status} ${res.statusText}`);
+  const html = await res.text();
+
+  const nextData = extractNextDataJson(html);
+  const feed = nextData?.props?.pageProps?.newsFeed;
+  if (!Array.isArray(feed)) throw new Error('CoinMarketCap: could not find newsFeed in page HTML.');
+
+  const limit = Number.isFinite(maxItems) ? Math.max(1, maxItems) : feed.length;
+  return feed.slice(0, limit).map((entry) => {
+    const meta = entry?.meta || {};
+    const title = meta.title || entry?.slug || '';
+    const description = meta.subtitle || '';
+    const permalink = meta.sourceUrl || entry?.meta?.sourceUrl || '';
+    return {
+      id: meta.id || entry?.slug || permalink || null,
+      url: permalink || null,
+      title,
+      description,
+      text: [title, description].filter(Boolean).join('\n').trim(),
+      sourceName: meta.sourceName || null,
+      releasedAt: meta.releasedAt || null,
+      raw: entry,
+    };
+  });
+}
+
 async function maybeNotify(webhookUrl, payload) {
   if (!webhookUrl) return;
 
@@ -186,6 +231,78 @@ Actor.main(async () => {
 
     if (!actorId) {
       log.warning('Skipping platform run with missing actorId', { platform });
+      continue;
+    }
+
+    // Built-in sources (no external Actor needed).
+    // This keeps the same `platformRuns[]` shape but allows scraping CoinMarketCap directly.
+    if (actorId === 'cmc/headlines-news') {
+      log.info('Fetching CoinMarketCap Headlines (News)', { platform, actorId });
+
+      const items = await fetchCmcHeadlinesNews({ maxItems: actorInput?.maxItems });
+
+      let totalChecked = 0;
+      let totalEmitted = 0;
+
+      for (const item of items) {
+        totalChecked += 1;
+        if (totalChecked > maxItemsPerDataset) break;
+
+        const stableId = pickStableId(item) || `cmc:${totalChecked}`;
+        if (dedupeEnabled && alreadySeen({ state, platform, id: stableId })) continue;
+
+        const texts = extractTextCandidates(item);
+        const joined = texts.join('\n').trim();
+        if (!joined) {
+          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+          continue;
+        }
+
+        if (!symbolsRegex.test(joined)) {
+          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+          continue;
+        }
+
+        const { isMatch, matchedSymbols } = matchTextAgainstSymbols({
+          text: joined,
+          symbols,
+          caseInsensitive,
+          useWordBoundaries,
+        });
+
+        if (!isMatch) {
+          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+          continue;
+        }
+
+        const out = {
+          platform,
+          stableId,
+          matchedAt: new Date().toISOString(),
+          matchedSymbols,
+          text: joined,
+          source: {
+            actorId,
+            runId: null,
+            datasetId: null,
+            url: 'https://coinmarketcap.com/headlines/news/',
+          },
+          raw: item,
+        };
+
+        await Actor.pushData(out);
+        totalEmitted += 1;
+
+        rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+
+        try {
+          await maybeNotify(String(notify.webhookUrl || '').trim(), out);
+        } catch (e) {
+          log.exception(e, 'Notification failed');
+        }
+      }
+
+      log.info('Platform run complete', { platform, checked: totalChecked, emitted: totalEmitted });
       continue;
     }
 

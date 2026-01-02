@@ -28,10 +28,9 @@ This Actor is designed as an **orchestrator**:
   "useWordBoundaries": false,
   "platformRuns": [
     {
-      "name": "x",
-      "actorId": "mikolabs/tweets-scraper",
+      "name": "coinmarketcap",
+      "actorId": "cmc/headlines-news",
       "input": {
-        "twitterHandles": ["CoinMarketCap"],
         "maxItems": 200
       }
     }
@@ -49,6 +48,7 @@ This Actor is designed as an **orchestrator**:
 ### Important notes
 
 - **`platformRuns` cannot be empty** if you want results. This Actor only filters items produced by the scraper Actors you configure in `platformRuns`.
+- **CoinMarketCap.com source (no external scraper needed)**: use `platformRuns[].actorId = "cmc/headlines-news"` to fetch CoinMarketCap Headlines (News) directly and filter by your `symbols`.
 - **Pick a valid `actorId`** from the Apify Store. Open the Actor page and copy it from the URL, e.g. `username/actor-name` (also accepted: `username~actor-name`).
 - **Configure monitored symbols** via **top-level `symbols`** (recommended). For backwards compatibility, you can also use `match.symbols`.
 
