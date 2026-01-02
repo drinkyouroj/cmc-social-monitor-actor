@@ -116,12 +116,19 @@ async function fetchCmcHeadlinesNews({ maxItems } = {}) {
     const title = meta.title || entry?.slug || '';
     const description = meta.subtitle || '';
     const permalink = meta.sourceUrl || entry?.meta?.sourceUrl || '';
+    const assetSymbols = Array.isArray(entry?.assets)
+      ? entry.assets.map((a) => a?.symbol).filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim())
+      : [];
     return {
       id: meta.id || entry?.slug || permalink || null,
       url: permalink || null,
       title,
       description,
-      text: [title, description].filter(Boolean).join('\n').trim(),
+      assets: assetSymbols,
+      text: [title, description, assetSymbols.length ? `Assets: ${assetSymbols.join(', ')}` : '']
+        .filter(Boolean)
+        .join('\n')
+        .trim(),
       sourceName: meta.sourceName || null,
       releasedAt: meta.releasedAt || null,
       raw: entry,
