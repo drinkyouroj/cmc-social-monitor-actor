@@ -6,6 +6,7 @@
     "platformRuns": {
       "title": "Platform runs",
       "type": "array",
+      "editor": "json",
       "description": "List of platform scraper Actors to run (Apify Store or your own). Their output datasets will be filtered.",
       "items": {
         "type": "object",
@@ -33,10 +34,12 @@
     "match": {
       "title": "Matching rules",
       "type": "object",
+      "editor": "json",
       "properties": {
         "symbols": {
           "title": "Symbols / terms",
           "type": "array",
+          "editor": "json",
           "items": { "type": "string" },
           "default": ["DGRAM"],
           "description": "Symbols/terms to monitor for (e.g. token symbols like DGRAM). Exact matching depends on caseInsensitive + useWordBoundaries."
@@ -62,6 +65,7 @@
     "dedupe": {
       "title": "Dedupe",
       "type": "object",
+      "editor": "json",
       "properties": {
         "enabled": { "title": "Enabled", "type": "boolean", "default": true },
         "maxSeenIdsPerPlatform": {
@@ -76,6 +80,7 @@
     "notify": {
       "title": "Notifications",
       "type": "object",
+      "editor": "json",
       "properties": {
         "webhookUrl": {
           "title": "Webhook URL",
@@ -89,6 +94,7 @@
     "debug": {
       "title": "Debug",
       "type": "object",
+      "editor": "json",
       "properties": {
         "maxItemsPerDataset": {
           "title": "Max items per dataset",
