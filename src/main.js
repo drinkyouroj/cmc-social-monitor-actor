@@ -1200,15 +1200,8 @@ Actor.main(async () => {
             raw: entry,
           };
 
-          const items = [
-            postItem,
-            ...commentsText.map((t, i) => ({
-              kind: 'comment',
-              id: `${postId}:${i + 1}`,
-              rootId: postId,
-              text: t,
-            })),
-          ].filter(Boolean);
+          // Emit the post first; comments are fetched later (bounded by maxPostsWithComments).
+          const items = [postItem];
 
           for (const item of items) {
             totalChecked += 1;
