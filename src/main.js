@@ -970,6 +970,25 @@ Actor.main(async () => {
               const title = await page.title().catch(() => '');
               const currentUrl = page.url();
               const html = await page.content().catch(() => '');
+              const bodyText = await page
+                .locator('body')
+                .innerText()
+                .then((t) => String(t || '').trim())
+                .catch(() => '');
+              const snippet = bodyText.slice(0, 240).replace(/\s+/g, ' ').trim();
+
+              log.warning('CoinMarketCap community-search page rendered but no post IDs were found', {
+                query,
+                safeMode,
+                currentUrl,
+                title,
+                snippet,
+                htmlLen: html.length,
+                hasPostPath: /\/community\/post\/\d+/.test(html),
+                looksLikeCaptcha: /captcha|cloudflare|attention required/i.test(title + ' ' + snippet),
+                looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
+              });
+
               await Actor.setValue(
                 `DEBUG_cmc_community_search_${safeMode}_${query}_meta.json`,
                 {
@@ -983,8 +1002,8 @@ Actor.main(async () => {
               await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.html`, html || '', { contentType: 'text/html' });
               const shot = await page.screenshot({ fullPage: true }).catch(() => null);
               if (shot) await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.png`, shot, { contentType: 'image/png' });
-            } catch {
-              // ignore
+            } catch (e) {
+              log.exception(e, 'Failed to persist community-search debug artifacts');
             }
           }
 
