@@ -389,6 +389,13 @@ async function maybeAcceptCookies(page) {
   return false;
 }
 
+function collectGravityIdsFromString(str, outSet) {
+  if (!str) return;
+  const re = /\"gravityId\"\s*:\s*\"?(\d{6,})\"?/g;
+  let m;
+  while ((m = re.exec(str))) outSet.add(m[1]);
+}
+
 async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}) {
   const q = String(query || '').trim();
   if (!q) return [];
@@ -404,6 +411,27 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
     const found = new Set();
 
     page.setDefaultTimeout(60000);
+    const observedFromNetwork = new Set();
+
+    // Capture post IDs from API responses even if the UI doesn't render anchor tags.
+    page.on('response', async (res) => {
+      try {
+        const url = res.url();
+        if (!/coinmarketcap\.com/.test(url)) return;
+        const ct = String(res.headers()['content-type'] || '');
+        if (!ct.includes('application/json')) return;
+        const txt = await res.text();
+        collectGravityIdsFromString(txt, observedFromNetwork);
+        // Merge into found (bounded)
+        for (const id of observedFromNetwork) {
+          found.add(id);
+          if (found.size >= targetMax) break;
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
     await maybeAcceptCookies(page);
     // Give client-side app time to hydrate/fetch.
@@ -459,9 +487,10 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
           looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
         });
 
+        const meta = { url, title, found: found.size, snippet, htmlLen: html.length, extractedIds: found.size };
         await Actor.setValue(
           `DEBUG_cmc_community_search_${safeMode}_${q}_meta.json`,
-          { url, title, found: found.size, snippet, htmlLen: html.length },
+          JSON.stringify(meta, null, 2),
           { contentType: 'application/json' }
         );
         await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${q}.html`, html || '', { contentType: 'text/html' });
@@ -1033,16 +1062,17 @@ Actor.main(async () => {
                 looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
               });
 
+              const meta = {
+                url: currentUrl,
+                title,
+                found: 0,
+                note: 'Selector(s) were present, but no /community/post/<id> hrefs were collected. Likely redirect, empty state, or bot-gate.',
+                snippet,
+                htmlLen: html.length,
+              };
               await Actor.setValue(
                 `DEBUG_cmc_community_search_${safeMode}_${query}_meta.json`,
-                {
-                  url: currentUrl,
-                  title,
-                  found: 0,
-                  note: 'Selector(s) were present, but no /community/post/<id> hrefs were collected. Likely redirect, empty state, or bot-gate.',
-            snippet,
-            htmlLen: html.length,
-                },
+                JSON.stringify(meta, null, 2),
                 { contentType: 'application/json' }
               );
               await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.html`, html || '', { contentType: 'text/html' });
