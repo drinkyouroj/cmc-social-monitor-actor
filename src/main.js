@@ -428,7 +428,7 @@ function collectGravityIdsFromString(str, outSet) {
   }
 }
 
-async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}) {
+async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts, context } = {}) {
   const q = String(query || '').trim();
   if (!q) return [];
 
@@ -438,7 +438,7 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
 
   const startUrl = `https://coinmarketcap.com/community/search/${safeMode}/${encodeURIComponent(q)}`;
 
-  return await runWithPlaywright(async ({ context }) => {
+  const runInContext = async (ctx) => {
     const page = await context.newPage();
     const found = new Set();
 
@@ -632,7 +632,10 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
 
     await page.close().catch(() => null);
     return [...found];
-  });
+  };
+
+  if (context) return await runInContext(context);
+  return await runWithPlaywright(async ({ context: ctx }) => runInContext(ctx));
 }
 
 async function fetchCmcCommunityCommentsFromBrowser({ postId, maxComments, context: existingContext } = {}) {
@@ -1041,168 +1044,7 @@ Actor.main(async () => {
 
       // Reuse one browser context for the whole run (much faster than launching per post).
       await runWithPlaywright(async ({ context }) => {
-        const postIds = await (async () => {
-          // Discover IDs using the same context by temporarily swapping runWithPlaywright.
-          const page = await context.newPage();
-          const m = String(mode || 'latest').trim().toLowerCase();
-          const safeMode = m === 'top' ? 'top' : 'latest';
-          const targetMax = Number.isFinite(maxPosts) ? Math.max(1, Math.min(500, maxPosts)) : 50;
-          const startUrl = `https://coinmarketcap.com/community/search/${safeMode}/${encodeURIComponent(query)}`;
-          const found = new Set();
-
-          page.setDefaultTimeout(60000);
-          await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
-          await maybeAcceptCookies(page);
-          await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => null);
-
-          const selectorCandidates = [
-            'a[href*="/community/post/"]',
-            'a[href^="/community/post/"]',
-            'a[href*="coinmarketcap.com/community/post/"]',
-          ];
-
-          let selectorOk = false;
-          for (const sel of selectorCandidates) {
-            try {
-              await page.waitForSelector(sel, { timeout: 15000 });
-              selectorOk = true;
-              break;
-            } catch {
-              // try next
-            }
-          }
-
-          if (!selectorOk) {
-            const html = await page.content().catch(() => '');
-            const ids = [...String(html).matchAll(/\/community\/post\/(\d+)/g)].map((mm) => mm[1]);
-            for (const id of ids) {
-              found.add(id);
-              if (found.size >= targetMax) break;
-            }
-
-            try {
-              const title = await page.title().catch(() => '');
-              const currentUrl = page.url();
-              const bodyText = await page
-                .locator('body')
-                .innerText()
-                .then((t) => String(t || '').trim())
-                .catch(() => '');
-              const snippet = bodyText.slice(0, 240).replace(/\s+/g, ' ').trim();
-
-              log.warning('CoinMarketCap community-search did not render post links; using HTML fallback', {
-                query,
-                safeMode,
-                currentUrl,
-                title,
-                snippet,
-                htmlLen: html.length,
-                extractedIds: found.size,
-                networkGravityUrls: debugNetworkUrls.length,
-                hasPostPath: /\/community\/post\/\d+/.test(html),
-                looksLikeCaptcha: /captcha|cloudflare|attention required/i.test(title + ' ' + snippet),
-                looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
-              });
-
-              // Persist network URL samples too.
-              try {
-                await Actor.setValue(
-                  `DEBUG_cmc_community_search_${safeMode}_${query}_network.json`,
-                  JSON.stringify({ urls: debugNetworkUrls.slice(0, 200) }, null, 2),
-                  { contentType: 'application/json' }
-                );
-              } catch {
-                // ignore
-              }
-
-              const meta = { url: currentUrl, title, found: found.size, snippet, htmlLen: html.length, extractedIds: found.size };
-              await Actor.setValue(
-                `DEBUG_cmc_community_search_${safeMode}_${query}_meta.json`,
-                JSON.stringify(meta, null, 2),
-                { contentType: 'application/json' }
-              );
-              await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.html`, html || '', { contentType: 'text/html' });
-              const shot = await page.screenshot({ fullPage: true }).catch(() => null);
-              if (shot) await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.png`, shot, { contentType: 'image/png' });
-            } catch (e) {
-              log.exception(e, 'Failed to persist community-search debug artifacts (selector not found branch)');
-            }
-
-            await page.close().catch(() => null);
-            return [...found];
-          }
-
-          let stableRounds = 0;
-          let lastCount = 0;
-
-          while (found.size < targetMax && stableRounds < 4) {
-            const hrefs = await page.$$eval('a[href*="/community/post/"],a[href^="/community/post/"]', (as) =>
-              as.map((a) => a.getAttribute('href')).filter(Boolean)
-            );
-
-            for (const href of hrefs) {
-              const mm = String(href).match(/\/community\/post\/(\d+)/);
-              if (mm?.[1]) found.add(mm[1]);
-              if (found.size >= targetMax) break;
-            }
-
-            if (found.size === lastCount) stableRounds += 1;
-            else stableRounds = 0;
-            lastCount = found.size;
-
-            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(1500);
-          }
-
-          // If we still found nothing, persist debug artifacts so we can see what the page rendered in Apify.
-          if (found.size === 0) {
-            try {
-              const title = await page.title().catch(() => '');
-              const currentUrl = page.url();
-              const html = await page.content().catch(() => '');
-              const bodyText = await page
-                .locator('body')
-                .innerText()
-                .then((t) => String(t || '').trim())
-                .catch(() => '');
-              const snippet = bodyText.slice(0, 240).replace(/\s+/g, ' ').trim();
-
-              log.warning('CoinMarketCap community-search page rendered but no post IDs were found', {
-                query,
-                safeMode,
-                currentUrl,
-                title,
-                snippet,
-                htmlLen: html.length,
-                hasPostPath: /\/community\/post\/\d+/.test(html),
-                looksLikeCaptcha: /captcha|cloudflare|attention required/i.test(title + ' ' + snippet),
-                looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
-              });
-
-              const meta = {
-                url: currentUrl,
-                title,
-                found: 0,
-                note: 'Selector(s) were present, but no /community/post/<id> hrefs were collected. Likely redirect, empty state, or bot-gate.',
-                snippet,
-                htmlLen: html.length,
-              };
-              await Actor.setValue(
-                `DEBUG_cmc_community_search_${safeMode}_${query}_meta.json`,
-                JSON.stringify(meta, null, 2),
-                { contentType: 'application/json' }
-              );
-              await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.html`, html || '', { contentType: 'text/html' });
-              const shot = await page.screenshot({ fullPage: true }).catch(() => null);
-              if (shot) await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.png`, shot, { contentType: 'image/png' });
-            } catch (e) {
-              log.exception(e, 'Failed to persist community-search debug artifacts');
-            }
-          }
-
-          await page.close().catch(() => null);
-          return [...found];
-        })();
+        const postIds = await discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts, context });
 
         if (postIds.length === 0) {
           log.warning('CoinMarketCap community-search returned 0 postIds; see DEBUG_* artifacts in KV store (if present).', {
