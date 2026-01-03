@@ -364,6 +364,31 @@ async function runWithPlaywright(fn) {
   }
 }
 
+async function maybeAcceptCookies(page) {
+  const candidates = [
+    'button:has-text("Accept")',
+    'button:has-text("I Agree")',
+    'button:has-text("Agree")',
+    'button:has-text("Accept all")',
+    'button:has-text("Accept All")',
+    'button:has-text("OK")',
+    'button:has-text("Got it")',
+  ];
+  for (const sel of candidates) {
+    try {
+      const loc = page.locator(sel).first();
+      if (await loc.count()) {
+        await loc.click({ timeout: 1000 }).catch(() => null);
+        await page.waitForTimeout(500);
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+
 async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}) {
   const q = String(query || '').trim();
   if (!q) return [];
@@ -378,14 +403,59 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
     const page = await context.newPage();
     const found = new Set();
 
+    page.setDefaultTimeout(60000);
     await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('a[href*="/community/post/"]', { timeout: 45000 });
+    await maybeAcceptCookies(page);
+    // Give client-side app time to hydrate/fetch.
+    await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => null);
+
+    const selectorCandidates = [
+      'a[href*="/community/post/"]',
+      'a[href^="/community/post/"]',
+      'a[href*="coinmarketcap.com/community/post/"]',
+    ];
+
+    let selectorOk = false;
+    for (const sel of selectorCandidates) {
+      try {
+        await page.waitForSelector(sel, { timeout: 15000 });
+        selectorOk = true;
+        break;
+      } catch {
+        // try next
+      }
+    }
+
+    if (!selectorOk) {
+      // Fallback: try extracting IDs from the page HTML (even if links aren't visible as anchors).
+      const html = await page.content().catch(() => '');
+      const ids = [...String(html).matchAll(/\/community\/post\/(\d+)/g)].map((m) => m[1]);
+      for (const id of ids) {
+        found.add(id);
+        if (found.size >= targetMax) break;
+      }
+
+      // Save debug artifacts for this run so we can see what was rendered in Apify.
+      try {
+        const title = await page.title().catch(() => '');
+        const url = page.url();
+        await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${q}_meta.json`, { url, title, found: found.size }, { contentType: 'application/json' });
+        await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${q}.html`, html || '', { contentType: 'text/html' });
+        const shot = await page.screenshot({ fullPage: true }).catch(() => null);
+        if (shot) await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${q}.png`, shot, { contentType: 'image/png' });
+      } catch {
+        // ignore debug failures
+      }
+
+      await page.close().catch(() => null);
+      return [...found];
+    }
 
     let stableRounds = 0;
     let lastCount = 0;
 
     while (found.size < targetMax && stableRounds < 4) {
-      const hrefs = await page.$$eval('a[href*="/community/post/"]', (as) =>
+      const hrefs = await page.$$eval('a[href*="/community/post/"],a[href^="/community/post/"]', (as) =>
         as.map((a) => a.getAttribute('href')).filter(Boolean)
       );
 
