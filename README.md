@@ -52,8 +52,29 @@ This Actor is designed as an **orchestrator**:
 - **CoinMarketCap.com sources (no external scraper needed)**:
   - `cmc/headlines-news`: CoinMarketCap Headlines (general news feed)
   - `cmc/currency-news`: CoinMarketCap *token page* news for a specific currency page (provide `input.currencySlugOrUrl` or `input.coinId`)
+  - `cmc/community-post`: A single CoinMarketCap Community post thread (provide `input.postIdOrUrl`) and (optionally) its comments
 - **Pick a valid `actorId`** from the Apify Store. Open the Actor page and copy it from the URL, e.g. `username/actor-name` (also accepted: `username~actor-name`).
 - **Configure monitored symbols** via **top-level `symbols`** (recommended). For backwards compatibility, you can also use `match.symbols`.
+
+## CoinMarketCap Community post example
+
+```json
+{
+  "symbols": ["DGRAM"],
+  "platformRuns": [
+    {
+      "name": "coinmarketcap-community",
+      "actorId": "cmc/community-post",
+      "input": {
+        "postIdOrUrl": "https://coinmarketcap.com/community/post/372410504",
+        "includeComments": true,
+        "maxComments": 50,
+        "commentsSort": "Newest"
+      }
+    }
+  ]
+}
+```
 
 ## Local development
 

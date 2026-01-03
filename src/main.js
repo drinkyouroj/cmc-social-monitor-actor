@@ -218,6 +218,115 @@ async function fetchCmcCurrencyNews({ coinId, currencySlugOrUrl, maxItems, langu
   });
 }
 
+function normalizeCmcCommunityPostId(postIdOrUrl) {
+  const raw = String(postIdOrUrl || '').trim();
+  if (!raw) return null;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    try {
+      const u = new URL(raw);
+      const m = u.pathname.match(/\/community\/post\/(\d+)\/?/);
+      return m?.[1] || null;
+    } catch {
+      return null;
+    }
+  }
+  const m = raw.match(/(\d+)/);
+  return m?.[1] || null;
+}
+
+async function fetchCmcCommunityPost({ postIdOrUrl } = {}) {
+  const postId = normalizeCmcCommunityPostId(postIdOrUrl);
+  if (!postId) throw new Error('CoinMarketCap community post: missing/invalid postIdOrUrl.');
+
+  const url = `https://coinmarketcap.com/community/post/${postId}/`;
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'Mozilla/5.0 (compatible; CMC-Social-Monitor/0.1; +https://apify.com)',
+      accept: 'text/html,application/xhtml+xml',
+    },
+  });
+  if (!res.ok) throw new Error(`CoinMarketCap community post fetch failed: ${res.status} ${res.statusText}`);
+  const html = await res.text();
+
+  const nextData = extractNextDataJson(html);
+  const queries = nextData?.props?.pageProps?.dehydratedState?.queries || [];
+  const postQuery = queries.find((q) => Array.isArray(q?.queryKey) && q.queryKey[0] === 'post' && String(q.queryKey[1]) === String(postId));
+  const post = postQuery?.state?.data?.[0];
+  if (!post || typeof post !== 'object') throw new Error('CoinMarketCap community post: could not extract post data from page.');
+
+  const text = String(post?.textContent || '').trim();
+  const owner = post?.owner || {};
+  const handle = owner?.handle || null;
+
+  return {
+    kind: 'post',
+    id: String(post?.gravityId || postId),
+    url,
+    ownerHandle: handle,
+    ownerGuid: owner?.guid || null,
+    createdAt: post?.postTime ? new Date(Number(post.postTime)).toISOString() : null,
+    text,
+    raw: post,
+  };
+}
+
+async function fetchCmcCommunityComments({ rootId, maxItems, sort } = {}) {
+  const rid = String(rootId || '').trim();
+  if (!rid) return [];
+
+  const size = Number.isFinite(maxItems) ? Math.max(1, Math.min(50, maxItems)) : 20;
+  const sortParam = String(sort || '').trim();
+
+  // NOTE: CoinMarketCap may change these internal endpoints. We try a reasonable default and fail gracefully.
+  const base = 'https://api.coinmarketcap.com/gravity/v4/gravity/comment/list';
+
+  const params = new URLSearchParams();
+  params.set('rootId', rid);
+  params.set('page', '1');
+  params.set('size', String(size));
+  if (sortParam) params.set('sort', sortParam);
+
+  const url = `${base}?${params.toString()}`;
+
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'Mozilla/5.0 (compatible; CMC-Social-Monitor/0.1; +https://apify.com)',
+      accept: 'application/json,text/plain,*/*',
+      referer: `https://coinmarketcap.com/community/post/${encodeURIComponent(rid)}/`,
+      origin: 'https://coinmarketcap.com',
+    },
+  });
+  if (!res.ok) throw new Error(`CoinMarketCap community comments fetch failed: ${res.status} ${res.statusText}`);
+
+  const body = await res.json().catch(() => null);
+  const status = body?.status;
+  const errCode = status?.error_code;
+  if (errCode && String(errCode) !== '0') {
+    log.warning('CoinMarketCap community comments returned non-success status', {
+      rootId: rid,
+      error_code: status?.error_code,
+      error_message: status?.error_message,
+    });
+    return [];
+  }
+
+  const items = Array.isArray(body?.data) ? body.data : [];
+  return items.map((c) => {
+    const owner = c?.owner || {};
+    return {
+      kind: 'comment',
+      id: String(c?.gravityId || ''),
+      rootId: String(c?.rootId || rid),
+      replyToGravityId: c?.replyToGravityId ? String(c.replyToGravityId) : null,
+      ownerHandle: owner?.handle || null,
+      ownerGuid: owner?.guid || null,
+      createdAt: c?.postTime ? new Date(Number(c.postTime)).toISOString() : null,
+      text: String(c?.textContent || '').trim(),
+      raw: c,
+    };
+  });
+}
+
 async function maybeNotify(webhookUrl, payload) {
   if (!webhookUrl) return;
 
@@ -450,6 +559,84 @@ Actor.main(async () => {
             runId: null,
             datasetId: null,
             url: item?.url || null,
+          },
+          raw: item,
+        };
+
+        await Actor.pushData(out);
+        totalEmitted += 1;
+
+        rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+
+        try {
+          await maybeNotify(String(notify.webhookUrl || '').trim(), out);
+        } catch (e) {
+          log.exception(e, 'Notification failed');
+        }
+      }
+
+      log.info('Platform run complete', { platform, checked: totalChecked, emitted: totalEmitted });
+      continue;
+    }
+
+    if (actorId === 'cmc/community-post') {
+      log.info('Fetching CoinMarketCap Community Post', { platform, actorId });
+
+      const post = await fetchCmcCommunityPost({ postIdOrUrl: actorInput?.postIdOrUrl || actorInput?.postUrl || actorInput?.postId });
+      const comments = actorInput?.includeComments === false
+        ? []
+        : await fetchCmcCommunityComments({
+            rootId: post?.id,
+            maxItems: actorInput?.maxComments,
+            sort: actorInput?.commentsSort,
+          });
+
+      const all = [post, ...comments].filter(Boolean);
+
+      let totalChecked = 0;
+      let totalEmitted = 0;
+
+      for (const item of all) {
+        totalChecked += 1;
+        if (totalChecked > maxItemsPerDataset) break;
+
+        const stableId = `cmc-community:${item?.kind || 'item'}:${String(item?.id || totalChecked)}`;
+        if (dedupeEnabled && alreadySeen({ state, platform, id: stableId })) continue;
+
+        const joined = String(item?.text || '').trim();
+        if (!joined) {
+          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+          continue;
+        }
+
+        if (!symbolsRegex.test(joined)) {
+          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+          continue;
+        }
+
+        const { isMatch, matchedSymbols } = matchTextAgainstSymbols({
+          text: joined,
+          symbols,
+          caseInsensitive,
+          useWordBoundaries,
+        });
+
+        if (!isMatch) {
+          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+          continue;
+        }
+
+        const out = {
+          platform,
+          stableId,
+          matchedAt: new Date().toISOString(),
+          matchedSymbols,
+          text: joined,
+          source: {
+            actorId,
+            runId: null,
+            datasetId: null,
+            url: post?.url || null,
           },
           raw: item,
         };

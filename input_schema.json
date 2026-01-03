@@ -41,7 +41,7 @@
           "actorId": {
             "title": "Actor ID",
             "type": "string",
-            "description": "Actor ID in Apify, e.g. apify/twitter-scraper."
+            "description": "Actor ID in Apify, e.g. apify/twitter-scraper. Built-ins: cmc/headlines-news, cmc/currency-news, cmc/community-post."
           },
           "input": {
             "title": "Actor input",
