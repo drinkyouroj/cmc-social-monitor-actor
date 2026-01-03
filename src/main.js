@@ -439,12 +439,36 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
       try {
         const title = await page.title().catch(() => '');
         const url = page.url();
-        await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${q}_meta.json`, { url, title, found: found.size }, { contentType: 'application/json' });
+        const bodyText = await page
+          .locator('body')
+          .innerText()
+          .then((t) => String(t || '').trim())
+          .catch(() => '');
+        const snippet = bodyText.slice(0, 240).replace(/\s+/g, ' ').trim();
+
+        log.warning('CoinMarketCap community-search page did not show post links; using HTML fallback', {
+          query: q,
+          safeMode,
+          currentUrl: url,
+          title,
+          snippet,
+          htmlLen: html.length,
+          extractedIds: found.size,
+          hasPostPath: /\/community\/post\/\d+/.test(html),
+          looksLikeCaptcha: /captcha|cloudflare|attention required/i.test(title + ' ' + snippet),
+          looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
+        });
+
+        await Actor.setValue(
+          `DEBUG_cmc_community_search_${safeMode}_${q}_meta.json`,
+          { url, title, found: found.size, snippet, htmlLen: html.length },
+          { contentType: 'application/json' }
+        );
         await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${q}.html`, html || '', { contentType: 'text/html' });
         const shot = await page.screenshot({ fullPage: true }).catch(() => null);
         if (shot) await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${q}.png`, shot, { contentType: 'image/png' });
-      } catch {
-        // ignore debug failures
+      } catch (e) {
+        log.exception(e, 'Failed to persist community-search debug artifacts');
       }
 
       await page.close().catch(() => null);
@@ -996,6 +1020,8 @@ Actor.main(async () => {
                   title,
                   found: 0,
                   note: 'Selector(s) were present, but no /community/post/<id> hrefs were collected. Likely redirect, empty state, or bot-gate.',
+            snippet,
+            htmlLen: html.length,
                 },
                 { contentType: 'application/json' }
               );
