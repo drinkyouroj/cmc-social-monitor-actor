@@ -950,16 +950,36 @@ Actor.main(async () => {
             try {
               const title = await page.title().catch(() => '');
               const currentUrl = page.url();
+              const bodyText = await page
+                .locator('body')
+                .innerText()
+                .then((t) => String(t || '').trim())
+                .catch(() => '');
+              const snippet = bodyText.slice(0, 240).replace(/\s+/g, ' ').trim();
+
+              log.warning('CoinMarketCap community-search did not render post links; using HTML fallback', {
+                query,
+                safeMode,
+                currentUrl,
+                title,
+                snippet,
+                htmlLen: html.length,
+                extractedIds: found.size,
+                hasPostPath: /\/community\/post\/\d+/.test(html),
+                looksLikeCaptcha: /captcha|cloudflare|attention required/i.test(title + ' ' + snippet),
+                looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
+              });
+
               await Actor.setValue(
                 `DEBUG_cmc_community_search_${safeMode}_${query}_meta.json`,
-                { url: currentUrl, title, found: found.size },
+                { url: currentUrl, title, found: found.size, snippet, htmlLen: html.length, extractedIds: found.size },
                 { contentType: 'application/json' }
               );
               await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.html`, html || '', { contentType: 'text/html' });
               const shot = await page.screenshot({ fullPage: true }).catch(() => null);
               if (shot) await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.png`, shot, { contentType: 'image/png' });
-            } catch {
-              // ignore
+            } catch (e) {
+              log.exception(e, 'Failed to persist community-search debug artifacts (selector not found branch)');
             }
 
             await page.close().catch(() => null);
