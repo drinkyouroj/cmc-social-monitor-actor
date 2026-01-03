@@ -964,9 +964,41 @@ Actor.main(async () => {
             await page.waitForTimeout(1500);
           }
 
+          // If we still found nothing, persist debug artifacts so we can see what the page rendered in Apify.
+          if (found.size === 0) {
+            try {
+              const title = await page.title().catch(() => '');
+              const currentUrl = page.url();
+              const html = await page.content().catch(() => '');
+              await Actor.setValue(
+                `DEBUG_cmc_community_search_${safeMode}_${query}_meta.json`,
+                {
+                  url: currentUrl,
+                  title,
+                  found: 0,
+                  note: 'Selector(s) were present, but no /community/post/<id> hrefs were collected. Likely redirect, empty state, or bot-gate.',
+                },
+                { contentType: 'application/json' }
+              );
+              await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.html`, html || '', { contentType: 'text/html' });
+              const shot = await page.screenshot({ fullPage: true }).catch(() => null);
+              if (shot) await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.png`, shot, { contentType: 'image/png' });
+            } catch {
+              // ignore
+            }
+          }
+
           await page.close().catch(() => null);
           return [...found];
         })();
+
+        if (postIds.length === 0) {
+          log.warning('CoinMarketCap community-search returned 0 postIds; see DEBUG_* artifacts in KV store (if present).', {
+            query,
+            mode,
+            maxPosts,
+          });
+        }
 
         for (const postId of postIds) {
           const post = await fetchCmcCommunityPost({ postIdOrUrl: postId });
