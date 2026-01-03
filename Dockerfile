@@ -1,5 +1,7 @@
 FROM apify/actor-node-playwright-chrome:18 AS builder
 
+WORKDIR /usr/src/app
+
 COPY package*.json ./
 RUN npm --quiet set fund false \
  && npm --quiet set audit false \
@@ -8,6 +10,8 @@ RUN npm --quiet set fund false \
 COPY . ./
 
 FROM apify/actor-node-playwright-chrome:18
+
+WORKDIR /usr/src/app
 
 COPY --from=builder /usr/src/app /usr/src/app
 
