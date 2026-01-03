@@ -188,7 +188,7 @@ function collectPostIdsFromNextData(nextData) {
 }
 
 async function discoverCmcCurrencyCommunityPostIds({ coinId, currencySlugOrUrl, maxPosts } = {}) {
-  const resolvedId = await resolveCmcCoinId({ coinId, currencySlugOrUrl });
+  await resolveCmcCoinId({ coinId, currencySlugOrUrl });
   const slug = normalizeCmcCurrencySlug(currencySlugOrUrl);
   if (!slug) throw new Error('cmc/currency-community: provide input.currencySlugOrUrl (or input.coinId).');
 
@@ -199,6 +199,7 @@ async function discoverCmcCurrencyCommunityPostIds({ coinId, currencySlugOrUrl, 
     const page = await context.newPage();
     const found = new Set();
     const observedFromNetwork = new Set();
+    const postsById = new Map();
 
     page.on('response', async (res) => {
       try {
@@ -209,6 +210,7 @@ async function discoverCmcCurrencyCommunityPostIds({ coinId, currencySlugOrUrl, 
         if (!looksJson) return;
         const txt = await res.text();
         collectGravityIdsFromString(txt, observedFromNetwork);
+        collectGravityPostSummariesFromString(txt, postsById);
         for (const id of observedFromNetwork) {
           found.add(id);
           if (found.size >= targetMax) break;
@@ -221,6 +223,18 @@ async function discoverCmcCurrencyCommunityPostIds({ coinId, currencySlugOrUrl, 
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await maybeAcceptCookies(page);
     await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => null);
+
+    // Scroll a bit to trigger the token page community module to load.
+    let stableRounds = 0;
+    let lastCount = postsById.size;
+    while (postsById.size < targetMax && stableRounds < 4) {
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(1500);
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => null);
+      if (postsById.size === lastCount) stableRounds += 1;
+      else stableRounds = 0;
+      lastCount = postsById.size;
+    }
 
     // Extract any directly-linked community posts from the rendered DOM.
     try {
@@ -250,9 +264,13 @@ async function discoverCmcCurrencyCommunityPostIds({ coinId, currencySlugOrUrl, 
     }
 
     await page.close().catch(() => null);
-    // If we have a resolved coinId, optionally filter out unrelated IDs by checking they appear on post pages later.
-    // We keep as-is here for breadth.
-    return [...found].slice(0, targetMax);
+    // Prefer rich post summaries from network; fall back to IDs.
+    const posts = [...postsById.values()]
+      .filter((p) => p?.gravityId && typeof p?.textContent === 'string')
+      .sort((a, b) => Number(b.postTime || 0) - Number(a.postTime || 0))
+      .slice(0, targetMax);
+    if (posts.length > 0) return posts;
+    return [...found].slice(0, targetMax).map((id) => ({ gravityId: id, textContent: '', commentCount: null, postTime: null, owner: null, currencies: null, raw: null }));
   });
 }
 
@@ -579,6 +597,48 @@ function collectGravityIdsFromString(str, outSet) {
     }
   } catch {
     // ignore parse failures
+  }
+}
+
+function collectGravityPostSummariesFromJson(obj, outById) {
+  const stack = [obj];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== 'object') continue;
+    if (Array.isArray(cur)) {
+      for (const v of cur) stack.push(v);
+      continue;
+    }
+
+    const gid = cur.gravityId;
+    const text = cur.textContent;
+    if ((typeof gid === 'string' || typeof gid === 'number') && typeof text === 'string') {
+      const id = typeof gid === 'number' ? String(gid) : gid;
+      if (/^\d{6,}$/.test(id)) {
+        outById.set(id, {
+          gravityId: id,
+          textContent: text,
+          commentCount: cur.commentCount ?? null,
+          postTime: cur.postTime ?? null,
+          owner: cur.owner ?? null,
+          currencies: cur.currencies ?? null,
+          raw: cur,
+        });
+      }
+    }
+
+    for (const v of Object.values(cur)) if (v && typeof v === 'object') stack.push(v);
+  }
+}
+
+function collectGravityPostSummariesFromString(str, outById) {
+  const text = String(str || '').trim();
+  if (!(text.startsWith('{') || text.startsWith('['))) return;
+  try {
+    const j = JSON.parse(text);
+    collectGravityPostSummariesFromJson(j, outById);
+  } catch {
+    // ignore
   }
 }
 
@@ -1110,8 +1170,9 @@ Actor.main(async () => {
       const maxPosts = Number.isFinite(actorInput?.maxPosts) ? actorInput.maxPosts : 50;
       const includeComments = actorInput?.includeComments === true;
       const maxCommentsPerPost = Number.isFinite(actorInput?.maxCommentsPerPost) ? actorInput.maxCommentsPerPost : 50;
+      const maxPostsWithComments = Number.isFinite(actorInput?.maxPostsWithComments) ? actorInput.maxPostsWithComments : 10;
 
-      const postIds = await discoverCmcCurrencyCommunityPostIds({
+      const postsOrIds = await discoverCmcCurrencyCommunityPostIds({
         coinId: actorInput?.coinId,
         currencySlugOrUrl: actorInput?.currencySlugOrUrl,
         maxPosts,
@@ -1119,23 +1180,28 @@ Actor.main(async () => {
 
       let totalChecked = 0;
       let totalEmitted = 0;
+      let postsWithCommentsFetched = 0;
 
       // Reuse one browser context for comments scraping.
       await runWithPlaywright(async ({ context }) => {
-        for (const postId of postIds) {
-          let post;
-          try {
-            post = await fetchCmcCommunityPost({ postIdOrUrl: postId, context });
-          } catch (e) {
-            log.warning('Skipping community post due to extraction failure', { postId, message: e?.message || String(e) });
-            continue;
-          }
-          const commentsText = includeComments
-            ? await fetchCmcCommunityCommentsFromBrowser({ postId, maxComments: maxCommentsPerPost, context })
-            : [];
+        for (const entry of postsOrIds) {
+          const postId = typeof entry === 'string' ? entry : entry?.gravityId;
+          if (!postId) continue;
+
+          const postText = typeof entry === 'object' ? String(entry?.textContent || '').trim() : '';
+          const postUrl = `https://coinmarketcap.com/community/post/${postId}/`;
+
+          // Emit the post itself using the summary text (fast, no post page needed).
+          const postItem = {
+            kind: 'post',
+            id: String(postId),
+            url: postUrl,
+            text: postText,
+            raw: entry,
+          };
 
           const items = [
-            post,
+            postItem,
             ...commentsText.map((t, i) => ({
               kind: 'comment',
               id: `${postId}:${i + 1}`,
@@ -1184,7 +1250,7 @@ Actor.main(async () => {
                 actorId,
                 runId: null,
                 datasetId: null,
-                url: post?.url || null,
+                url: postUrl,
               },
               raw: item,
             };
@@ -1198,6 +1264,64 @@ Actor.main(async () => {
               await maybeNotify(String(notify.webhookUrl || '').trim(), out);
             } catch (e) {
               log.exception(e, 'Notification failed');
+            }
+          }
+
+          // Fetch comments only for a limited number of matched posts (keeps runtime bounded).
+          if (
+            includeComments &&
+            postsWithCommentsFetched < maxPostsWithComments &&
+            (typeof entry?.commentCount === 'number' ? entry.commentCount : 1) > 0
+          ) {
+            // Only fetch if the post itself matched (otherwise we'd waste time).
+            if (postText && symbolsRegex.test(postText)) {
+              const { isMatch } = matchTextAgainstSymbols({
+                text: postText,
+                symbols,
+                caseInsensitive,
+                useWordBoundaries,
+              });
+              if (isMatch) {
+                const commentsText = await fetchCmcCommunityCommentsFromBrowser({ postId, maxComments: maxCommentsPerPost, context });
+                postsWithCommentsFetched += 1;
+                for (let i = 0; i < commentsText.length; i++) {
+                  const text = String(commentsText[i] || '').trim();
+                  if (!text) continue;
+                  totalChecked += 1;
+                  if (totalChecked > maxItemsPerDataset) break;
+
+                  const stableId = `cmc-community:${platform}:comment:${postId}:${i + 1}`;
+                  if (dedupeEnabled && alreadySeen({ state, platform, id: stableId })) continue;
+                  if (!symbolsRegex.test(text)) {
+                    rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+                    continue;
+                  }
+
+                  const { isMatch: cm, matchedSymbols } = matchTextAgainstSymbols({
+                    text,
+                    symbols,
+                    caseInsensitive,
+                    useWordBoundaries,
+                  });
+                  if (!cm) {
+                    rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+                    continue;
+                  }
+
+                  const out = {
+                    platform,
+                    stableId,
+                    matchedAt: new Date().toISOString(),
+                    matchedSymbols,
+                    text,
+                    source: { actorId, runId: null, datasetId: null, url: postUrl },
+                    raw: { kind: 'comment', id: `${postId}:${i + 1}`, rootId: postId, text },
+                  };
+                  await Actor.pushData(out);
+                  totalEmitted += 1;
+                  rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+                }
+              }
             }
           }
 
