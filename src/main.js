@@ -999,9 +999,10 @@ Actor.main(async () => {
                 looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
               });
 
+              const meta = { url: currentUrl, title, found: found.size, snippet, htmlLen: html.length, extractedIds: found.size };
               await Actor.setValue(
                 `DEBUG_cmc_community_search_${safeMode}_${query}_meta.json`,
-                { url: currentUrl, title, found: found.size, snippet, htmlLen: html.length, extractedIds: found.size },
+                JSON.stringify(meta, null, 2),
                 { contentType: 'application/json' }
               );
               await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.html`, html || '', { contentType: 'text/html' });
