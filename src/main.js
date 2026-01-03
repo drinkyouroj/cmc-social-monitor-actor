@@ -444,6 +444,7 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
 
     page.setDefaultTimeout(60000);
     const observedFromNetwork = new Set();
+    const debugNetworkUrls = [];
 
     // Capture post IDs from API responses even if the UI doesn't render anchor tags.
     page.on('response', async (res) => {
@@ -454,6 +455,8 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
         // Some endpoints reply with text/plain or application/*json.
         const looksJson = ct.includes('json') || /\/gravity\/|data-api|graphql/i.test(url);
         if (!looksJson) return;
+        if (/\/gravity\//i.test(url) && debugNetworkUrls.length < 200) debugNetworkUrls.push(url);
+
         const txt = await res.text();
         collectGravityIdsFromString(txt, observedFromNetwork);
         // Merge into found (bounded)
@@ -474,40 +477,64 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
     // If CoinMarketCap redirects /community/search/* back to /community/, use the in-page search UI.
     const landedUrl = page.url();
     if (!/\/community\/search\//.test(landedUrl)) {
-      // Try to find the community "Search posts or users" input (not the OneTrust cookie list search).
-      const inputCandidates = [
-        'input[placeholder*="Search posts"]',
-        'input[aria-label*="Search posts"]',
-        'input[placeholder*="posts or users"]',
-        'input[aria-label*="posts or users"]',
-        'input[placeholder^="Search"]',
-        'input[aria-label^="Search"]',
-        'input[type="search"]',
-      ];
-
-      let searchInput = null;
-      for (const sel of inputCandidates) {
-        const loc = page.locator(sel).filter({ hasNot: page.locator('#onetrust-consent-sdk') }).first();
-        if (await loc.count()) {
-          // Exclude OneTrust cookie list search (known id).
-          const id = await loc.getAttribute('id').catch(() => null);
-          if (id === 'vendor-search-handler') continue;
-          // Prefer visible input
-          const visible = await loc.isVisible().catch(() => false);
-          if (!visible) continue;
-          searchInput = loc;
-          break;
+      // Introspect inputs to reliably find the community "Search posts or users" box.
+      const inputs = await page.evaluate(() => {
+        const isVisible = (el) => {
+          const r = el.getBoundingClientRect();
+          if (!r || r.width < 20 || r.height < 10) return false;
+          const style = window.getComputedStyle(el);
+          if (!style || style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity || '1') === 0) return false;
+          return true;
+        };
+        const out = [];
+        for (const el of Array.from(document.querySelectorAll('input'))) {
+          const closestOneTrust = el.closest('#onetrust-consent-sdk');
+          out.push({
+            id: el.id || null,
+            name: el.getAttribute('name') || null,
+            type: el.getAttribute('type') || null,
+            placeholder: el.getAttribute('placeholder') || null,
+            ariaLabel: el.getAttribute('aria-label') || null,
+            role: el.getAttribute('role') || null,
+            inOneTrust: !!closestOneTrust,
+            visible: isVisible(el),
+          });
         }
-      }
+        return out;
+      });
 
-      if (searchInput) {
+      const candidates = inputs
+        .filter((i) => i.visible && !i.inOneTrust && i.id !== 'vendor-search-handler')
+        .map((i) => ({
+          ...i,
+          text: `${i.placeholder || ''} ${i.ariaLabel || ''}`.toLowerCase(),
+        }));
+
+      const pick =
+        candidates.find((c) => c.text.includes('posts') && c.text.includes('users')) ||
+        candidates.find((c) => c.text.includes('posts')) ||
+        candidates.find((c) => c.text.includes('users')) ||
+        candidates.find((c) => (c.type || '').toLowerCase() === 'search') ||
+        candidates[0] ||
+        null;
+
+      if (pick) {
         try {
-          await searchInput.click({ timeout: 5000 });
-          await searchInput.fill(q);
-          await searchInput.press('Enter').catch(() => null);
-          await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => null);
-          // Give any debounced searches time to complete.
-          await page.waitForTimeout(2000);
+          // Locate by id if possible, otherwise by placeholder/aria-label.
+          let loc = null;
+          if (pick.id) loc = page.locator(`#${CSS.escape(pick.id)}`).first();
+          else if (pick.placeholder) loc = page.locator(`input[placeholder=${JSON.stringify(pick.placeholder)}]`).first();
+          else if (pick.ariaLabel) loc = page.locator(`input[aria-label=${JSON.stringify(pick.ariaLabel)}]`).first();
+
+          if (loc) {
+            await loc.click({ timeout: 5000 });
+            await loc.fill(q);
+            // Some UIs search on input, some on Enter.
+            await loc.press('Enter').catch(() => null);
+            await page.waitForTimeout(1000);
+            await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => null);
+            await page.waitForTimeout(1500);
+          }
         } catch {
           // ignore; we'll still attempt HTML/network extraction
         }
@@ -1071,10 +1098,22 @@ Actor.main(async () => {
                 snippet,
                 htmlLen: html.length,
                 extractedIds: found.size,
+          networkGravityUrls: debugNetworkUrls.length,
                 hasPostPath: /\/community\/post\/\d+/.test(html),
                 looksLikeCaptcha: /captcha|cloudflare|attention required/i.test(title + ' ' + snippet),
                 looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
               });
+
+        // Persist network URL samples too.
+        try {
+          await Actor.setValue(
+            `DEBUG_cmc_community_search_${safeMode}_${query}_network.json`,
+            JSON.stringify({ urls: debugNetworkUrls.slice(0, 200) }, null, 2),
+            { contentType: 'application/json' }
+          );
+        } catch {
+          // ignore
+        }
 
               const meta = { url: currentUrl, title, found: found.size, snippet, htmlLen: html.length, extractedIds: found.size };
               await Actor.setValue(
