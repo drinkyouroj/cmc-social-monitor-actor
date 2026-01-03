@@ -53,6 +53,7 @@ This Actor is designed as an **orchestrator**:
   - `cmc/headlines-news`: CoinMarketCap Headlines (general news feed)
   - `cmc/currency-news`: CoinMarketCap *token page* news for a specific currency page (provide `input.currencySlugOrUrl` or `input.coinId`)
   - `cmc/community-post`: A single CoinMarketCap Community post thread (provide `input.postIdOrUrl`) and (optionally) its comments
+  - `cmc/community-search`: Find many Community posts by keyword via the Community search UI (client-rendered). Provide `input.query`. Optional `includeComments`.
 - **Pick a valid `actorId`** from the Apify Store. Open the Actor page and copy it from the URL, e.g. `username/actor-name` (also accepted: `username~actor-name`).
 - **Configure monitored symbols** via **top-level `symbols`** (recommended). For backwards compatibility, you can also use `match.symbols`.
 
@@ -70,6 +71,27 @@ This Actor is designed as an **orchestrator**:
         "includeComments": true,
         "maxComments": 50,
         "commentsSort": "Newest"
+      }
+    }
+  ]
+}
+```
+
+## CoinMarketCap Community search example (many posts + optional comments)
+
+```json
+{
+  "symbols": ["DGRAM"],
+  "platformRuns": [
+    {
+      "name": "coinmarketcap-community",
+      "actorId": "cmc/community-search",
+      "input": {
+        "query": "DGRAM",
+        "mode": "latest",
+        "maxPosts": 100,
+        "includeComments": true,
+        "maxCommentsPerPost": 50
       }
     }
   ]
