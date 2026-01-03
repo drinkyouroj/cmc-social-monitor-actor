@@ -371,6 +371,11 @@ async function maybeAcceptCookies(page) {
     'button:has-text("Agree")',
     'button:has-text("Accept all")',
     'button:has-text("Accept All")',
+    'button:has-text("Accept cookies")',
+    'button:has-text("Accept Cookies")',
+    'button:has-text("Allow all")',
+    'button:has-text("Allow All")',
+    'button:has-text("I Accept")',
     'button:has-text("OK")',
     'button:has-text("Got it")',
   ];
@@ -391,9 +396,36 @@ async function maybeAcceptCookies(page) {
 
 function collectGravityIdsFromString(str, outSet) {
   if (!str) return;
+  const text = String(str);
+  // Fast path: regex scan.
   const re = /\"gravityId\"\s*:\s*\"?(\d{6,})\"?/g;
   let m;
-  while ((m = re.exec(str))) outSet.add(m[1]);
+  while ((m = re.exec(text))) outSet.add(m[1]);
+
+  // If it looks like JSON, try to parse and walk to catch other shapes (numbers, nested objects).
+  const trimmed = text.trim();
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return;
+  try {
+    const j = JSON.parse(trimmed);
+    const stack = [j];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || typeof cur !== 'object') continue;
+      if (Array.isArray(cur)) {
+        for (const v of cur) stack.push(v);
+        continue;
+      }
+      for (const [k, v] of Object.entries(cur)) {
+        if (k === 'gravityId') {
+          const id = typeof v === 'number' ? String(v) : typeof v === 'string' ? v : null;
+          if (id && /^\d{6,}$/.test(id)) outSet.add(id);
+        }
+        if (v && typeof v === 'object') stack.push(v);
+      }
+    }
+  } catch {
+    // ignore parse failures
+  }
 }
 
 async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}) {
@@ -418,8 +450,10 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
       try {
         const url = res.url();
         if (!/coinmarketcap\.com/.test(url)) return;
-        const ct = String(res.headers()['content-type'] || '');
-        if (!ct.includes('application/json')) return;
+        const ct = String(res.headers()['content-type'] || '').toLowerCase();
+        // Some endpoints reply with text/plain or application/*json.
+        const looksJson = ct.includes('json') || /\/gravity\/|data-api|graphql/i.test(url);
+        if (!looksJson) return;
         const txt = await res.text();
         collectGravityIdsFromString(txt, observedFromNetwork);
         // Merge into found (bounded)
@@ -436,6 +470,49 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
     await maybeAcceptCookies(page);
     // Give client-side app time to hydrate/fetch.
     await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => null);
+
+    // If CoinMarketCap redirects /community/search/* back to /community/, use the in-page search UI.
+    const landedUrl = page.url();
+    if (!/\/community\/search\//.test(landedUrl)) {
+      // Try to find the community "Search posts or users" input (not the OneTrust cookie list search).
+      const inputCandidates = [
+        'input[placeholder*="Search posts"]',
+        'input[aria-label*="Search posts"]',
+        'input[placeholder*="posts or users"]',
+        'input[aria-label*="posts or users"]',
+        'input[placeholder^="Search"]',
+        'input[aria-label^="Search"]',
+        'input[type="search"]',
+      ];
+
+      let searchInput = null;
+      for (const sel of inputCandidates) {
+        const loc = page.locator(sel).filter({ hasNot: page.locator('#onetrust-consent-sdk') }).first();
+        if (await loc.count()) {
+          // Exclude OneTrust cookie list search (known id).
+          const id = await loc.getAttribute('id').catch(() => null);
+          if (id === 'vendor-search-handler') continue;
+          // Prefer visible input
+          const visible = await loc.isVisible().catch(() => false);
+          if (!visible) continue;
+          searchInput = loc;
+          break;
+        }
+      }
+
+      if (searchInput) {
+        try {
+          await searchInput.click({ timeout: 5000 });
+          await searchInput.fill(q);
+          await searchInput.press('Enter').catch(() => null);
+          await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => null);
+          // Give any debounced searches time to complete.
+          await page.waitForTimeout(2000);
+        } catch {
+          // ignore; we'll still attempt HTML/network extraction
+        }
+      }
+    }
 
     const selectorCandidates = [
       'a[href*="/community/post/"]',
