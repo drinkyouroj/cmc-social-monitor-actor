@@ -1,5 +1,5 @@
 const { Actor, ApifyClient, log } = require('apify');
-const { PlaywrightCrawler } = require('crawlee');
+const { chromium } = require('playwright');
 
 const STATE_KEY = 'STATE';
 
@@ -328,6 +328,19 @@ async function fetchCmcCommunityComments({ rootId, maxItems, sort } = {}) {
   });
 }
 
+async function runWithPlaywright(fn) {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (compatible; CMC-Social-Monitor/0.1; +https://apify.com)',
+  });
+  try {
+    return await fn({ browser, context });
+  } finally {
+    await context.close().catch(() => null);
+    await browser.close().catch(() => null);
+  }
+}
+
 async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}) {
   const q = String(query || '').trim();
   if (!q) return [];
@@ -338,109 +351,98 @@ async function discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts } = {}
 
   const startUrl = `https://coinmarketcap.com/community/search/${safeMode}/${encodeURIComponent(q)}`;
 
-  const found = new Set();
+  return await runWithPlaywright(async ({ context }) => {
+    const page = await context.newPage();
+    const found = new Set();
 
-  const crawler = new PlaywrightCrawler({
-    maxRequestsPerCrawl: 1,
-    requestHandlerTimeoutSecs: 120,
-    launchContext: {
-      launchOptions: {
-        headless: true,
-      },
-    },
-    async requestHandler({ page }) {
-      await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
-      // Wait for at least one post link to appear (client-side rendered).
-      await page.waitForSelector('a[href*="/community/post/"]', { timeout: 45000 });
+    await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('a[href*="/community/post/"]', { timeout: 45000 });
 
-      let stableRounds = 0;
-      let lastCount = 0;
+    let stableRounds = 0;
+    let lastCount = 0;
 
-      while (found.size < targetMax && stableRounds < 4) {
-        const hrefs = await page.$$eval('a[href*="/community/post/"]', (as) =>
-          as.map((a) => a.getAttribute('href')).filter(Boolean)
-        );
+    while (found.size < targetMax && stableRounds < 4) {
+      const hrefs = await page.$$eval('a[href*="/community/post/"]', (as) =>
+        as.map((a) => a.getAttribute('href')).filter(Boolean)
+      );
 
-        for (const href of hrefs) {
-          const m = String(href).match(/\/community\/post\/(\d+)/);
-          if (m?.[1]) found.add(m[1]);
-          if (found.size >= targetMax) break;
-        }
-
-        if (found.size === lastCount) stableRounds += 1;
-        else stableRounds = 0;
-        lastCount = found.size;
-
-        // Scroll to trigger infinite loading.
-        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await page.waitForTimeout(1500);
+      for (const href of hrefs) {
+        const mm = String(href).match(/\/community\/post\/(\d+)/);
+        if (mm?.[1]) found.add(mm[1]);
+        if (found.size >= targetMax) break;
       }
-    },
-  });
 
-  await crawler.run([{ url: startUrl }]);
-  return [...found];
+      if (found.size === lastCount) stableRounds += 1;
+      else stableRounds = 0;
+      lastCount = found.size;
+
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(1500);
+    }
+
+    await page.close().catch(() => null);
+    return [...found];
+  });
 }
 
-async function fetchCmcCommunityCommentsFromBrowser({ postId, maxComments } = {}) {
+async function fetchCmcCommunityCommentsFromBrowser({ postId, maxComments, context: existingContext } = {}) {
   const pid = normalizeCmcCommunityPostId(postId);
   if (!pid) return [];
 
   const limit = Number.isFinite(maxComments) ? Math.max(1, Math.min(200, maxComments)) : 50;
   const url = `https://coinmarketcap.com/community/post/${pid}/`;
 
-  const comments = [];
+  const run = async ({ context }) => {
+    const page = await context.newPage();
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
 
-  const crawler = new PlaywrightCrawler({
-    maxRequestsPerCrawl: 1,
-    requestHandlerTimeoutSecs: 120,
-    launchContext: {
-      launchOptions: { headless: true },
-    },
-    async requestHandler({ page }) {
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
+    const comments = [];
+    const seen = new Set();
 
-      // Comments are client-side rendered; they use .comment-post-item elements (seen in the bundle).
-      await page.waitForSelector('.comment-post-item', { timeout: 45000 }).catch(() => null);
+    await page.waitForSelector('.comment-post-item', { timeout: 45000 }).catch(() => null);
 
-      let stableRounds = 0;
-      let lastCount = 0;
+    let stableRounds = 0;
+    let lastCount = 0;
 
-      while (comments.length < limit && stableRounds < 4) {
-        // Expand "more replies" buttons if present.
-        for (const txt of ['Show more replies', 'More Replies', 'Show more', 'See more']) {
-          try {
-            const btn = page.locator(`button:has-text(\"${txt}\")`).first();
-            if (await btn.count()) await btn.click({ timeout: 1000 }).catch(() => null);
-          } catch {
-            // ignore
-          }
+    while (comments.length < limit && stableRounds < 4) {
+      for (const txt of ['Show more replies', 'More Replies', 'Show more', 'See more']) {
+        try {
+          const btn = page.locator(`button:has-text(\"${txt}\")`).first();
+          if (await btn.count()) await btn.click({ timeout: 1000 }).catch(() => null);
+        } catch {
+          // ignore
         }
-
-        const texts = await page.$$eval('.comment-post-item', (nodes) =>
-          nodes
-            .map((n) => (n instanceof HTMLElement ? n.innerText : ''))
-            .map((t) => String(t || '').trim())
-            .filter(Boolean)
-        );
-
-        for (const t of texts) {
-          if (comments.length >= limit) break;
-          if (!comments.includes(t)) comments.push(t);
-        }
-
-        if (comments.length === lastCount) stableRounds += 1;
-        else stableRounds = 0;
-        lastCount = comments.length;
-
-        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await page.waitForTimeout(1500);
       }
-    },
-  });
 
-  await crawler.run([{ url }]);
-  return comments;
+      const texts = await page.$$eval('.comment-post-item', (nodes) =>
+        nodes
+          .map((n) => (n instanceof HTMLElement ? n.innerText : ''))
+          .map((t) => String(t || '').trim())
+          .filter(Boolean)
+      );
+
+      for (const t of texts) {
+        if (comments.length >= limit) break;
+        if (!seen.has(t)) {
+          seen.add(t);
+          comments.push(t);
+        }
+      }
+
+      if (comments.length === lastCount) stableRounds += 1;
+      else stableRounds = 0;
+      lastCount = comments.length;
+
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(1500);
+    }
+
+    await page.close().catch(() => null);
+    return comments;
+  };
+
+  if (existingContext) return await run({ context: existingContext });
+  return await runWithPlaywright(async ({ context }) => run({ context }));
 }
 
 async function maybeNotify(webhookUrl, payload) {
@@ -784,84 +786,125 @@ Actor.main(async () => {
       const includeComments = actorInput?.includeComments === true;
       const maxCommentsPerPost = Number.isFinite(actorInput?.maxCommentsPerPost) ? actorInput.maxCommentsPerPost : 50;
 
-      const postIds = await discoverCmcCommunityPostIdsByQuery({ query, mode, maxPosts });
-
       let totalChecked = 0;
       let totalEmitted = 0;
 
-      for (const postId of postIds) {
-        const post = await fetchCmcCommunityPost({ postIdOrUrl: postId });
-        const commentsText = includeComments ? await fetchCmcCommunityCommentsFromBrowser({ postId, maxComments: maxCommentsPerPost }) : [];
+      // Reuse one browser context for the whole run (much faster than launching per post).
+      await runWithPlaywright(async ({ context }) => {
+        const postIds = await (async () => {
+          // Discover IDs using the same context by temporarily swapping runWithPlaywright.
+          const page = await context.newPage();
+          const m = String(mode || 'latest').trim().toLowerCase();
+          const safeMode = m === 'top' ? 'top' : 'latest';
+          const targetMax = Number.isFinite(maxPosts) ? Math.max(1, Math.min(500, maxPosts)) : 50;
+          const startUrl = `https://coinmarketcap.com/community/search/${safeMode}/${encodeURIComponent(query)}`;
+          const found = new Set();
 
-        const items = [
-          post,
-          ...commentsText.map((t, i) => ({
-            kind: 'comment',
-            id: `${postId}:${i + 1}`,
-            rootId: postId,
-            text: t,
-          })),
-        ].filter(Boolean);
+          await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
+          await page.waitForSelector('a[href*="/community/post/"]', { timeout: 45000 });
 
-        for (const item of items) {
-          totalChecked += 1;
+          let stableRounds = 0;
+          let lastCount = 0;
+
+          while (found.size < targetMax && stableRounds < 4) {
+            const hrefs = await page.$$eval('a[href*="/community/post/"]', (as) =>
+              as.map((a) => a.getAttribute('href')).filter(Boolean)
+            );
+
+            for (const href of hrefs) {
+              const mm = String(href).match(/\/community\/post\/(\d+)/);
+              if (mm?.[1]) found.add(mm[1]);
+              if (found.size >= targetMax) break;
+            }
+
+            if (found.size === lastCount) stableRounds += 1;
+            else stableRounds = 0;
+            lastCount = found.size;
+
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page.waitForTimeout(1500);
+          }
+
+          await page.close().catch(() => null);
+          return [...found];
+        })();
+
+        for (const postId of postIds) {
+          const post = await fetchCmcCommunityPost({ postIdOrUrl: postId });
+          const commentsText = includeComments
+            ? await fetchCmcCommunityCommentsFromBrowser({ postId, maxComments: maxCommentsPerPost, context })
+            : [];
+
+          const items = [
+            post,
+            ...commentsText.map((t, i) => ({
+              kind: 'comment',
+              id: `${postId}:${i + 1}`,
+              rootId: postId,
+              text: t,
+            })),
+          ].filter(Boolean);
+
+          for (const item of items) {
+            totalChecked += 1;
+            if (totalChecked > maxItemsPerDataset) break;
+
+            const stableId = `cmc-community:${item?.kind || 'item'}:${String(item?.id || totalChecked)}`;
+            if (dedupeEnabled && alreadySeen({ state, platform, id: stableId })) continue;
+
+            const joined = String(item?.text || '').trim();
+            if (!joined) {
+              rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+              continue;
+            }
+
+            if (!symbolsRegex.test(joined)) {
+              rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+              continue;
+            }
+
+            const { isMatch, matchedSymbols } = matchTextAgainstSymbols({
+              text: joined,
+              symbols,
+              caseInsensitive,
+              useWordBoundaries,
+            });
+
+            if (!isMatch) {
+              rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+              continue;
+            }
+
+            const out = {
+              platform,
+              stableId,
+              matchedAt: new Date().toISOString(),
+              matchedSymbols,
+              text: joined,
+              source: {
+                actorId,
+                runId: null,
+                datasetId: null,
+                url: post?.url || null,
+              },
+              raw: item,
+            };
+
+            await Actor.pushData(out);
+            totalEmitted += 1;
+
+            rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+
+            try {
+              await maybeNotify(String(notify.webhookUrl || '').trim(), out);
+            } catch (e) {
+              log.exception(e, 'Notification failed');
+            }
+          }
+
           if (totalChecked > maxItemsPerDataset) break;
-
-          const stableId = `cmc-community:${item?.kind || 'item'}:${String(item?.id || totalChecked)}`;
-          if (dedupeEnabled && alreadySeen({ state, platform, id: stableId })) continue;
-
-          const joined = String(item?.text || '').trim();
-          if (!joined) {
-            rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
-            continue;
-          }
-
-          if (!symbolsRegex.test(joined)) {
-            rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
-            continue;
-          }
-
-          const { isMatch, matchedSymbols } = matchTextAgainstSymbols({
-            text: joined,
-            symbols,
-            caseInsensitive,
-            useWordBoundaries,
-          });
-
-          if (!isMatch) {
-            rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
-            continue;
-          }
-
-          const out = {
-            platform,
-            stableId,
-            matchedAt: new Date().toISOString(),
-            matchedSymbols,
-            text: joined,
-            source: {
-              actorId,
-              runId: null,
-              datasetId: null,
-              url: post?.url || null,
-            },
-            raw: item,
-          };
-
-          await Actor.pushData(out);
-          totalEmitted += 1;
-
-          rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
-
-          try {
-            await maybeNotify(String(notify.webhookUrl || '').trim(), out);
-          } catch (e) {
-            log.exception(e, 'Notification failed');
-          }
         }
-
-        if (totalChecked > maxItemsPerDataset) break;
-      }
+      });
 
       log.info('Platform run complete', { platform, checked: totalChecked, emitted: totalEmitted });
       continue;
