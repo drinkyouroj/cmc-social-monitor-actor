@@ -316,9 +316,84 @@ function normalizeCmcCommunityPostId(postIdOrUrl) {
   return m?.[1] || null;
 }
 
-async function fetchCmcCommunityPost({ postIdOrUrl } = {}) {
+function extractCmcCommunityPostFromNextData({ nextData, postId }) {
+  const queries = nextData?.props?.pageProps?.dehydratedState?.queries || [];
+  const postQuery = queries.find((q) => Array.isArray(q?.queryKey) && q.queryKey[0] === 'post' && String(q.queryKey[1]) === String(postId));
+  return postQuery?.state?.data?.[0] || null;
+}
+
+async function fetchCmcCommunityPostFromBrowser({ postIdOrUrl, context } = {}) {
   const postId = normalizeCmcCommunityPostId(postIdOrUrl);
   if (!postId) throw new Error('CoinMarketCap community post: missing/invalid postIdOrUrl.');
+  if (!context) throw new Error('CoinMarketCap community post: missing browser context.');
+
+  const url = `https://coinmarketcap.com/community/post/${postId}/`;
+  const page = await context.newPage();
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await maybeAcceptCookies(page);
+    await page.waitForLoadState('networkidle', { timeout: 45000 }).catch(() => null);
+
+    const html = await page.content().catch(() => '');
+    const nextData = extractNextDataJson(html);
+    const post = extractCmcCommunityPostFromNextData({ nextData, postId });
+
+    if (post && typeof post === 'object') {
+      const text = String(post?.textContent || '').trim();
+      const owner = post?.owner || {};
+      return {
+        kind: 'post',
+        id: String(post?.gravityId || postId),
+        url,
+        ownerHandle: owner?.handle || null,
+        ownerGuid: owner?.guid || null,
+        createdAt: post?.postTime ? new Date(Number(post.postTime)).toISOString() : null,
+        text,
+        raw: post,
+      };
+    }
+
+    // Fallback: pull the first post-ish text from the rendered page.
+    const bodyText = await page
+      .locator('body')
+      .innerText()
+      .then((t) => String(t || '').trim())
+      .catch(() => '');
+
+    // Heuristic: the post content usually appears near the top; keep it bounded.
+    const text = bodyText.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 60).join('\n').trim();
+
+    // Save debug artifacts to KV store to understand what the post page served.
+    try {
+      await Actor.setValue(`DEBUG_cmc_community_post_${postId}.html`, html || '', { contentType: 'text/html' });
+      const shot = await page.screenshot({ fullPage: true }).catch(() => null);
+      if (shot) await Actor.setValue(`DEBUG_cmc_community_post_${postId}.png`, shot, { contentType: 'image/png' });
+    } catch {
+      // ignore
+    }
+
+    if (!text) throw new Error('CoinMarketCap community post: could not extract post data from page.');
+
+    return {
+      kind: 'post',
+      id: String(postId),
+      url,
+      ownerHandle: null,
+      ownerGuid: null,
+      createdAt: null,
+      text,
+      raw: { fallback: true },
+    };
+  } finally {
+    await page.close().catch(() => null);
+  }
+}
+
+async function fetchCmcCommunityPost({ postIdOrUrl, context } = {}) {
+  const postId = normalizeCmcCommunityPostId(postIdOrUrl);
+  if (!postId) throw new Error('CoinMarketCap community post: missing/invalid postIdOrUrl.');
+
+  if (context) return await fetchCmcCommunityPostFromBrowser({ postIdOrUrl: postId, context });
 
   const url = `https://coinmarketcap.com/community/post/${postId}/`;
   const res = await fetch(url, {
@@ -331,9 +406,7 @@ async function fetchCmcCommunityPost({ postIdOrUrl } = {}) {
   const html = await res.text();
 
   const nextData = extractNextDataJson(html);
-  const queries = nextData?.props?.pageProps?.dehydratedState?.queries || [];
-  const postQuery = queries.find((q) => Array.isArray(q?.queryKey) && q.queryKey[0] === 'post' && String(q.queryKey[1]) === String(postId));
-  const post = postQuery?.state?.data?.[0];
+  const post = extractCmcCommunityPostFromNextData({ nextData, postId });
   if (!post || typeof post !== 'object') throw new Error('CoinMarketCap community post: could not extract post data from page.');
 
   const text = String(post?.textContent || '').trim();
@@ -1050,7 +1123,13 @@ Actor.main(async () => {
       // Reuse one browser context for comments scraping.
       await runWithPlaywright(async ({ context }) => {
         for (const postId of postIds) {
-          const post = await fetchCmcCommunityPost({ postIdOrUrl: postId });
+          let post;
+          try {
+            post = await fetchCmcCommunityPost({ postIdOrUrl: postId, context });
+          } catch (e) {
+            log.warning('Skipping community post due to extraction failure', { postId, message: e?.message || String(e) });
+            continue;
+          }
           const commentsText = includeComments
             ? await fetchCmcCommunityCommentsFromBrowser({ postId, maxComments: maxCommentsPerPost, context })
             : [];
