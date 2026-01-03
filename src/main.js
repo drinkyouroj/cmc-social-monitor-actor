@@ -1098,22 +1098,22 @@ Actor.main(async () => {
                 snippet,
                 htmlLen: html.length,
                 extractedIds: found.size,
-          networkGravityUrls: debugNetworkUrls.length,
+                networkGravityUrls: debugNetworkUrls.length,
                 hasPostPath: /\/community\/post\/\d+/.test(html),
                 looksLikeCaptcha: /captcha|cloudflare|attention required/i.test(title + ' ' + snippet),
                 looksLikeAccessDenied: /access denied|forbidden|blocked/i.test(title + ' ' + snippet),
               });
 
-        // Persist network URL samples too.
-        try {
-          await Actor.setValue(
-            `DEBUG_cmc_community_search_${safeMode}_${query}_network.json`,
-            JSON.stringify({ urls: debugNetworkUrls.slice(0, 200) }, null, 2),
-            { contentType: 'application/json' }
-          );
-        } catch {
-          // ignore
-        }
+              // Persist network URL samples too.
+              try {
+                await Actor.setValue(
+                  `DEBUG_cmc_community_search_${safeMode}_${query}_network.json`,
+                  JSON.stringify({ urls: debugNetworkUrls.slice(0, 200) }, null, 2),
+                  { contentType: 'application/json' }
+                );
+              } catch {
+                // ignore
+              }
 
               const meta = { url: currentUrl, title, found: found.size, snippet, htmlLen: html.length, extractedIds: found.size };
               await Actor.setValue(
