@@ -175,6 +175,87 @@ async function resolveCmcCoinId({ coinId, currencySlugOrUrl } = {}) {
   return Number.isFinite(num) && num > 0 ? num : null;
 }
 
+function collectPostIdsFromNextData(nextData) {
+  const out = new Set();
+  const ann = nextData?.props?.pageProps?.detailRes?.announcementNew;
+  if (Array.isArray(ann)) {
+    for (const a of ann) {
+      const gid = a?.tweetDTO?.gravityId ?? a?.tweetDTO?.rootId;
+      if (gid && String(gid).match(/^\d+$/)) out.add(String(gid));
+    }
+  }
+  return [...out];
+}
+
+async function discoverCmcCurrencyCommunityPostIds({ coinId, currencySlugOrUrl, maxPosts } = {}) {
+  const resolvedId = await resolveCmcCoinId({ coinId, currencySlugOrUrl });
+  const slug = normalizeCmcCurrencySlug(currencySlugOrUrl);
+  if (!slug) throw new Error('cmc/currency-community: provide input.currencySlugOrUrl (or input.coinId).');
+
+  const targetMax = Number.isFinite(maxPosts) ? Math.max(1, Math.min(500, maxPosts)) : 50;
+  const url = `https://coinmarketcap.com/currencies/${slug}/`;
+
+  return await runWithPlaywright(async ({ context }) => {
+    const page = await context.newPage();
+    const found = new Set();
+    const observedFromNetwork = new Set();
+
+    page.on('response', async (res) => {
+      try {
+        const u = res.url();
+        if (!/coinmarketcap\.com/.test(u)) return;
+        const ct = String(res.headers()['content-type'] || '').toLowerCase();
+        const looksJson = ct.includes('json') || /\/gravity\/|data-api|graphql/i.test(u);
+        if (!looksJson) return;
+        const txt = await res.text();
+        collectGravityIdsFromString(txt, observedFromNetwork);
+        for (const id of observedFromNetwork) {
+          found.add(id);
+          if (found.size >= targetMax) break;
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await maybeAcceptCookies(page);
+    await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => null);
+
+    // Extract any directly-linked community posts from the rendered DOM.
+    try {
+      const hrefs = await page.$$eval('a[href*="/community/post/"],a[href^="/community/post/"]', (as) =>
+        as.map((a) => a.getAttribute('href')).filter(Boolean)
+      );
+      for (const href of hrefs) {
+        const m = String(href).match(/\/community\/post\/(\d+)/);
+        if (m?.[1]) found.add(m[1]);
+        if (found.size >= targetMax) break;
+      }
+    } catch {
+      // ignore
+    }
+
+    // Also extract from SSR __NEXT_DATA__ if present (announcement posts).
+    try {
+      const html = await page.content();
+      const nextData = extractNextDataJson(html);
+      const ids = collectPostIdsFromNextData(nextData);
+      for (const id of ids) {
+        found.add(id);
+        if (found.size >= targetMax) break;
+      }
+    } catch {
+      // ignore
+    }
+
+    await page.close().catch(() => null);
+    // If we have a resolved coinId, optionally filter out unrelated IDs by checking they appear on post pages later.
+    // We keep as-is here for breadth.
+    return [...found].slice(0, targetMax);
+  });
+}
+
 async function fetchCmcCurrencyNews({ coinId, currencySlugOrUrl, maxItems, language } = {}) {
   const resolvedId = await resolveCmcCoinId({ coinId, currencySlugOrUrl });
   if (!resolvedId) throw new Error('CoinMarketCap: could not resolve coinId from currencySlugOrUrl.');
@@ -945,6 +1026,105 @@ Actor.main(async () => {
           log.exception(e, 'Notification failed');
         }
       }
+
+      log.info('Platform run complete', { platform, checked: totalChecked, emitted: totalEmitted });
+      continue;
+    }
+
+    if (actorId === 'cmc/currency-community') {
+      log.info('Fetching CoinMarketCap Currency Community Posts', { platform, actorId });
+
+      const maxPosts = Number.isFinite(actorInput?.maxPosts) ? actorInput.maxPosts : 50;
+      const includeComments = actorInput?.includeComments === true;
+      const maxCommentsPerPost = Number.isFinite(actorInput?.maxCommentsPerPost) ? actorInput.maxCommentsPerPost : 50;
+
+      const postIds = await discoverCmcCurrencyCommunityPostIds({
+        coinId: actorInput?.coinId,
+        currencySlugOrUrl: actorInput?.currencySlugOrUrl,
+        maxPosts,
+      });
+
+      let totalChecked = 0;
+      let totalEmitted = 0;
+
+      // Reuse one browser context for comments scraping.
+      await runWithPlaywright(async ({ context }) => {
+        for (const postId of postIds) {
+          const post = await fetchCmcCommunityPost({ postIdOrUrl: postId });
+          const commentsText = includeComments
+            ? await fetchCmcCommunityCommentsFromBrowser({ postId, maxComments: maxCommentsPerPost, context })
+            : [];
+
+          const items = [
+            post,
+            ...commentsText.map((t, i) => ({
+              kind: 'comment',
+              id: `${postId}:${i + 1}`,
+              rootId: postId,
+              text: t,
+            })),
+          ].filter(Boolean);
+
+          for (const item of items) {
+            totalChecked += 1;
+            if (totalChecked > maxItemsPerDataset) break;
+
+            const stableId = `cmc-community:${platform}:${item?.kind || 'item'}:${String(item?.id || totalChecked)}`;
+            if (dedupeEnabled && alreadySeen({ state, platform, id: stableId })) continue;
+
+            const joined = String(item?.text || '').trim();
+            if (!joined) {
+              rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+              continue;
+            }
+
+            if (!symbolsRegex.test(joined)) {
+              rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+              continue;
+            }
+
+            const { isMatch, matchedSymbols } = matchTextAgainstSymbols({
+              text: joined,
+              symbols,
+              caseInsensitive,
+              useWordBoundaries,
+            });
+
+            if (!isMatch) {
+              rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+              continue;
+            }
+
+            const out = {
+              platform,
+              stableId,
+              matchedAt: new Date().toISOString(),
+              matchedSymbols,
+              text: joined,
+              source: {
+                actorId,
+                runId: null,
+                datasetId: null,
+                url: post?.url || null,
+              },
+              raw: item,
+            };
+
+            await Actor.pushData(out);
+            totalEmitted += 1;
+
+            rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+
+            try {
+              await maybeNotify(String(notify.webhookUrl || '').trim(), out);
+            } catch (e) {
+              log.exception(e, 'Notification failed');
+            }
+          }
+
+          if (totalChecked > maxItemsPerDataset) break;
+        }
+      });
 
       log.info('Platform run complete', { platform, checked: totalChecked, emitted: totalEmitted });
       continue;

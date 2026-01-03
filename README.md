@@ -52,6 +52,7 @@ This Actor is designed as an **orchestrator**:
 - **CoinMarketCap.com sources (no external scraper needed)**:
   - `cmc/headlines-news`: CoinMarketCap Headlines (general news feed)
   - `cmc/currency-news`: CoinMarketCap *token page* news for a specific currency page (provide `input.currencySlugOrUrl` or `input.coinId`)
+  - `cmc/currency-community`: CoinMarketCap *token page* community feed posts for a specific currency page (provide `input.currencySlugOrUrl` or `input.coinId`)
   - `cmc/community-post`: A single CoinMarketCap Community post thread (provide `input.postIdOrUrl`) and (optionally) its comments
   - `cmc/community-search`: Find many Community posts by keyword via the Community search UI (client-rendered). Provide `input.query`. Optional `includeComments`.
 - **Pick a valid `actorId`** from the Apify Store. Open the Actor page and copy it from the URL, e.g. `username/actor-name` (also accepted: `username~actor-name`).
@@ -92,6 +93,28 @@ This Actor is designed as an **orchestrator**:
         "maxPosts": 100,
         "includeComments": true,
         "maxCommentsPerPost": 50
+      }
+    }
+  ]
+}
+```
+
+## CoinMarketCap token page Community feed example (recommended)
+
+This avoids the global `/community/` search page (which can redirect / be gated in automation) by anchoring the run to a specific token page like [Datagram Network](https://coinmarketcap.com/currencies/datagram-network/).
+
+```json
+{
+  "symbols": ["DGRAM", "Datagram Network"],
+  "platformRuns": [
+    {
+      "name": "coinmarketcap-community",
+      "actorId": "cmc/currency-community",
+      "input": {
+        "currencySlugOrUrl": "https://coinmarketcap.com/currencies/datagram-network/",
+        "maxPosts": 200,
+        "includeComments": true,
+        "maxCommentsPerPost": 200
       }
     }
   ]
