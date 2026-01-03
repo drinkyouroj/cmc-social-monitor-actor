@@ -893,14 +893,60 @@ Actor.main(async () => {
           const startUrl = `https://coinmarketcap.com/community/search/${safeMode}/${encodeURIComponent(query)}`;
           const found = new Set();
 
+          page.setDefaultTimeout(60000);
           await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
-          await page.waitForSelector('a[href*="/community/post/"]', { timeout: 45000 });
+          await maybeAcceptCookies(page);
+          await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => null);
+
+          const selectorCandidates = [
+            'a[href*="/community/post/"]',
+            'a[href^="/community/post/"]',
+            'a[href*="coinmarketcap.com/community/post/"]',
+          ];
+
+          let selectorOk = false;
+          for (const sel of selectorCandidates) {
+            try {
+              await page.waitForSelector(sel, { timeout: 15000 });
+              selectorOk = true;
+              break;
+            } catch {
+              // try next
+            }
+          }
+
+          if (!selectorOk) {
+            const html = await page.content().catch(() => '');
+            const ids = [...String(html).matchAll(/\/community\/post\/(\d+)/g)].map((mm) => mm[1]);
+            for (const id of ids) {
+              found.add(id);
+              if (found.size >= targetMax) break;
+            }
+
+            try {
+              const title = await page.title().catch(() => '');
+              const currentUrl = page.url();
+              await Actor.setValue(
+                `DEBUG_cmc_community_search_${safeMode}_${query}_meta.json`,
+                { url: currentUrl, title, found: found.size },
+                { contentType: 'application/json' }
+              );
+              await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.html`, html || '', { contentType: 'text/html' });
+              const shot = await page.screenshot({ fullPage: true }).catch(() => null);
+              if (shot) await Actor.setValue(`DEBUG_cmc_community_search_${safeMode}_${query}.png`, shot, { contentType: 'image/png' });
+            } catch {
+              // ignore
+            }
+
+            await page.close().catch(() => null);
+            return [...found];
+          }
 
           let stableRounds = 0;
           let lastCount = 0;
 
           while (found.size < targetMax && stableRounds < 4) {
-            const hrefs = await page.$$eval('a[href*="/community/post/"]', (as) =>
+            const hrefs = await page.$$eval('a[href*="/community/post/"],a[href^="/community/post/"]', (as) =>
               as.map((a) => a.getAttribute('href')).filter(Boolean)
             );
 
