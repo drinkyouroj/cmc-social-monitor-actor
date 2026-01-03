@@ -329,7 +329,30 @@ async function fetchCmcCommunityComments({ rootId, maxItems, sort } = {}) {
 }
 
 async function runWithPlaywright(fn) {
-  const browser = await chromium.launch({ headless: true });
+  const launchAttempts = [
+    { headless: true },
+    // In Apify's Playwright images, system Chrome is typically available; this avoids needing `npx playwright install`.
+    { headless: true, channel: 'chrome' },
+    { headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined },
+    { headless: true, executablePath: '/usr/bin/google-chrome' },
+    { headless: true, executablePath: '/usr/bin/google-chrome-stable' },
+    { headless: true, executablePath: '/usr/bin/chromium-browser' },
+    { headless: true, executablePath: '/usr/bin/chromium' },
+  ].filter((o) => !('executablePath' in o) || o.executablePath);
+
+  let browser;
+  let lastErr;
+  for (const opts of launchAttempts) {
+    try {
+      browser = await chromium.launch(opts);
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (!browser) throw lastErr;
+
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (compatible; CMC-Social-Monitor/0.1; +https://apify.com)',
   });
