@@ -927,6 +927,17 @@ async function maybeNotify(webhookUrl, payload) {
   }
 }
 
+function getRemainingRunMillis() {
+  try {
+    const env = Actor.getEnv();
+    const timeoutAt = env?.timeoutAt ? new Date(env.timeoutAt).getTime() : null;
+    if (!timeoutAt || Number.isNaN(timeoutAt)) return null;
+    return timeoutAt - Date.now();
+  } catch {
+    return null;
+  }
+}
+
 async function loadState() {
   const store = await Actor.openKeyValueStore();
   const existing = await store.getValue(STATE_KEY);
@@ -1170,7 +1181,8 @@ Actor.main(async () => {
       const maxPosts = Number.isFinite(actorInput?.maxPosts) ? actorInput.maxPosts : 50;
       const includeComments = actorInput?.includeComments === true;
       const maxCommentsPerPost = Number.isFinite(actorInput?.maxCommentsPerPost) ? actorInput.maxCommentsPerPost : 50;
-      const maxPostsWithComments = Number.isFinite(actorInput?.maxPostsWithComments) ? actorInput.maxPostsWithComments : 10;
+      // Comment scraping is the slowest part. Keep the default small so runs fit the 360s default timeout.
+      const maxPostsWithComments = Number.isFinite(actorInput?.maxPostsWithComments) ? actorInput.maxPostsWithComments : 2;
 
       const postsOrIds = await discoverCmcCurrencyCommunityPostIds({
         coinId: actorInput?.coinId,
@@ -1181,6 +1193,13 @@ Actor.main(async () => {
       let totalChecked = 0;
       let totalEmitted = 0;
       let postsWithCommentsFetched = 0;
+
+      log.info('Discovered token community posts', {
+        platform,
+        count: Array.isArray(postsOrIds) ? postsOrIds.length : 0,
+        includeComments,
+        maxPostsWithComments,
+      });
 
       // Reuse one browser context for comments scraping.
       await runWithPlaywright(async ({ context }) => {
@@ -1275,6 +1294,11 @@ Actor.main(async () => {
                 useWordBoundaries,
               });
               if (isMatch) {
+                const remaining = getRemainingRunMillis();
+                // If we're close to timeout, skip further comment scraping.
+                if (remaining != null && remaining < 90_000) {
+                  log.warning('Skipping comment scraping due to low remaining runtime', { remainingMs: remaining, postId });
+                } else {
                 const commentsText = await fetchCmcCommunityCommentsFromBrowser({ postId, maxComments: maxCommentsPerPost, context });
                 postsWithCommentsFetched += 1;
                 for (let i = 0; i < commentsText.length; i++) {
@@ -1313,6 +1337,7 @@ Actor.main(async () => {
                   await Actor.pushData(out);
                   totalEmitted += 1;
                   rememberSeenId({ state, platform, id: stableId, maxSeenIdsPerPlatform });
+                }
                 }
               }
             }

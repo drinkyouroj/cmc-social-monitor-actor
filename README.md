@@ -115,6 +115,8 @@ This avoids the global `/community/` search page (which can redirect / be gated 
         "maxPosts": 200,
         "includeComments": true,
         "maxCommentsPerPost": 200
+        ,
+        "maxPostsWithComments": 2
       }
     }
   ]
