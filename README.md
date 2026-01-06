@@ -103,6 +103,11 @@ This Actor is designed as an **orchestrator**:
 
 This avoids the global `/community/` search page (which can redirect / be gated in automation) by anchoring the run to a specific token page like [Datagram Network](https://coinmarketcap.com/currencies/datagram-network/).
 
+Config knobs (all optional):
+- `maxRecentPosts` (alias: `maxMostRecentPosts`, legacy: `maxPosts`)
+- `maxRecentCommentsPerPost` (alias: `maxMostRecentCommentsPerPost`, legacy: `maxCommentsPerPost`)
+- `maxPostsWithComments` (caps how many *matched* posts we expand into comment scraping; default is small to fit Apify’s 360s default timeout)
+
 ```json
 {
   "symbols": ["DGRAM", "Datagram Network"],
@@ -112,9 +117,9 @@ This avoids the global `/community/` search page (which can redirect / be gated 
       "actorId": "cmc/currency-community",
       "input": {
         "currencySlugOrUrl": "https://coinmarketcap.com/currencies/datagram-network/",
-        "maxPosts": 200,
+        "maxRecentPosts": 200,
         "includeComments": true,
-        "maxCommentsPerPost": 200
+        "maxRecentCommentsPerPost": 200
         ,
         "maxPostsWithComments": 2
       }

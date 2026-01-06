@@ -1178,9 +1178,22 @@ Actor.main(async () => {
     if (actorId === 'cmc/currency-community') {
       log.info('Fetching CoinMarketCap Currency Community Posts', { platform, actorId });
 
-      const maxPosts = Number.isFinite(actorInput?.maxPosts) ? actorInput.maxPosts : 50;
+      // v0.2-dev: configurable "X most recent posts/comments" aliases
+      const maxPosts = Number.isFinite(actorInput?.maxRecentPosts)
+        ? actorInput.maxRecentPosts
+        : Number.isFinite(actorInput?.maxMostRecentPosts)
+          ? actorInput.maxMostRecentPosts
+          : Number.isFinite(actorInput?.maxPosts)
+            ? actorInput.maxPosts
+            : 50;
       const includeComments = actorInput?.includeComments === true;
-      const maxCommentsPerPost = Number.isFinite(actorInput?.maxCommentsPerPost) ? actorInput.maxCommentsPerPost : 50;
+      const maxCommentsPerPost = Number.isFinite(actorInput?.maxRecentCommentsPerPost)
+        ? actorInput.maxRecentCommentsPerPost
+        : Number.isFinite(actorInput?.maxMostRecentCommentsPerPost)
+          ? actorInput.maxMostRecentCommentsPerPost
+          : Number.isFinite(actorInput?.maxCommentsPerPost)
+            ? actorInput.maxCommentsPerPost
+            : 50;
       // Comment scraping is the slowest part. Keep the default small so runs fit the 360s default timeout.
       const maxPostsWithComments = Number.isFinite(actorInput?.maxPostsWithComments) ? actorInput.maxPostsWithComments : 2;
 
