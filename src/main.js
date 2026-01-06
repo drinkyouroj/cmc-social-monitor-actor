@@ -927,14 +927,46 @@ async function maybeNotify(webhookUrl, payload) {
   }
 }
 
-function getRemainingRunMillis() {
+function getRunTimingInfo({ assumeTimeoutSecs } = {}) {
   try {
     const env = Actor.getEnv();
-    const timeoutAt = env?.timeoutAt ? new Date(env.timeoutAt).getTime() : null;
-    if (!timeoutAt || Number.isNaN(timeoutAt)) return null;
-    return timeoutAt - Date.now();
+    const now = Date.now();
+
+    const timeoutAtMs = env?.timeoutAt ? new Date(env.timeoutAt).getTime() : null;
+    if (timeoutAtMs && !Number.isNaN(timeoutAtMs)) {
+      return {
+        source: 'timeoutAt',
+        timeoutAt: env.timeoutAt,
+        startedAt: env?.startedAt || null,
+        timeoutSecs: env?.timeoutSecs ?? null,
+        remainingMs: timeoutAtMs - now,
+      };
+    }
+
+    // Fallback: compute using startedAt + timeoutSecs (or an explicit override).
+    const startedAtMs = env?.startedAt ? new Date(env.startedAt).getTime() : null;
+    const timeoutSecs =
+      Number.isFinite(assumeTimeoutSecs) ? assumeTimeoutSecs : Number.isFinite(env?.timeoutSecs) ? env.timeoutSecs : null;
+    if (startedAtMs && !Number.isNaN(startedAtMs) && timeoutSecs != null) {
+      const timeoutAt = new Date(startedAtMs + timeoutSecs * 1000).toISOString();
+      return {
+        source: Number.isFinite(assumeTimeoutSecs) ? 'assumeTimeoutSecs' : 'startedAt+timeoutSecs',
+        timeoutAt,
+        startedAt: env.startedAt,
+        timeoutSecs,
+        remainingMs: startedAtMs + timeoutSecs * 1000 - now,
+      };
+    }
+
+    return {
+      source: 'unknown',
+      timeoutAt: env?.timeoutAt || null,
+      startedAt: env?.startedAt || null,
+      timeoutSecs: env?.timeoutSecs ?? null,
+      remainingMs: null,
+    };
   } catch {
-    return null;
+    return { source: 'error', timeoutAt: null, startedAt: null, timeoutSecs: null, remainingMs: null };
   }
 }
 
@@ -1196,6 +1228,12 @@ Actor.main(async () => {
             : 50;
       // Comment scraping is the slowest part. Keep the default small so runs fit the 360s default timeout.
       const maxPostsWithComments = Number.isFinite(actorInput?.maxPostsWithComments) ? actorInput.maxPostsWithComments : 2;
+      // How much runtime must be left to start scraping comments.
+      const minRemainingMsForCommentScrape = Number.isFinite(actorInput?.minRemainingMsForCommentScrape)
+        ? actorInput.minRemainingMsForCommentScrape
+        : 90_000;
+      // Optional override if Actor.getEnv().timeoutAt does not reflect your configured timeout.
+      const assumeTimeoutSecs = Number.isFinite(actorInput?.assumeTimeoutSecs) ? actorInput.assumeTimeoutSecs : null;
 
       const postsOrIds = await discoverCmcCurrencyCommunityPostIds({
         coinId: actorInput?.coinId,
@@ -1212,6 +1250,7 @@ Actor.main(async () => {
         count: Array.isArray(postsOrIds) ? postsOrIds.length : 0,
         includeComments,
         maxPostsWithComments,
+        minRemainingMsForCommentScrape,
       });
 
       // Reuse one browser context for comments scraping.
@@ -1307,10 +1346,18 @@ Actor.main(async () => {
                 useWordBoundaries,
               });
               if (isMatch) {
-                const remaining = getRemainingRunMillis();
+                const timing = getRunTimingInfo({ assumeTimeoutSecs });
+                const remaining = timing?.remainingMs;
                 // If we're close to timeout, skip further comment scraping.
-                if (remaining != null && remaining < 90_000) {
-                  log.warning('Skipping comment scraping due to low remaining runtime', { remainingMs: remaining, postId });
+                if (remaining != null && remaining < minRemainingMsForCommentScrape) {
+                  log.warning('Skipping comment scraping due to low remaining runtime', {
+                    remainingMs: remaining,
+                    minRemainingMsForCommentScrape,
+                    timingSource: timing?.source,
+                    timeoutAt: timing?.timeoutAt,
+                    timeoutSecs: timing?.timeoutSecs,
+                    postId,
+                  });
                 } else {
                 const commentsText = await fetchCmcCommunityCommentsFromBrowser({ postId, maxComments: maxCommentsPerPost, context });
                 postsWithCommentsFetched += 1;
